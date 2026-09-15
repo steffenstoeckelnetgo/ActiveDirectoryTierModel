@@ -66,17 +66,17 @@ BeforeAll {
     }
 }
 
-BeforeEach {
-    # The SID cache and the memoized domain SID persist for the module session; clear both so
-    # each test observes its own mocks rather than a neighbour's result.
-    InModuleScope TierModel {
-        $script:SidCache = @{}
-        $script:CanonicalDomainSidCache = @{}
-    }
-    Mock Write-TierModelLog { } -ModuleName TierModel
-}
-
 Describe "Get-TierModelCanonicalPrincipal" -Tag 'Unit', 'Resolution', 'Canonical' {
+
+    BeforeEach {
+        # The SID cache and the memoized domain SID persist for the module session; clear both
+        # so each test observes its own mocks rather than a neighbour's result.
+        InModuleScope TierModel {
+            $script:SidCache = @{}
+            $script:CanonicalDomainSidCache = @{}
+        }
+        Mock Write-TierModelLog { } -ModuleName TierModel
+    }
 
     It "maps <Name> to RID <Rid> in scope <Scope>" -TestCases @(
         @{ Name = 'Domain Admins';                           Rid = 512; Scope = 'Domain' }
@@ -125,12 +125,22 @@ Describe "Get-TierModelCanonicalPrincipal" -Tag 'Unit', 'Resolution', 'Canonical
 Describe "Resolve-TierModelPrincipalSid on an ENGLISH directory" -Tag 'Unit', 'Resolution', 'Canonical' {
 
     BeforeEach {
+        InModuleScope TierModel {
+            $script:SidCache = @{}
+            $script:CanonicalDomainSidCache = @{}
+        }
+        Mock Write-TierModelLog { } -ModuleName TierModel
+
+    # NOTE: mock bodies must not reference $script: variables from BeforeAll. A mock declared
+    # with -ModuleName runs in the MODULE's session state, where $script:TestDomainSid resolves
+    # to $null - which silently produced a malformed SID and sent every lookup down the
+    # name-resolution fallback. The literal is used inside mock bodies for that reason.
         Mock Get-ADDomain {
             [PSCustomObject]@{
                 DNSRoot           = 'test.local'
                 NetBIOSName       = 'TEST'
                 DistinguishedName = 'DC=test,DC=local'
-                DomainSID         = [System.Security.Principal.SecurityIdentifier]::new($script:TestDomainSid)
+                DomainSID         = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-21-1111111111-2222222222-3333333333')
             }
         } -ModuleName TierModel
 
@@ -190,12 +200,18 @@ Describe "Resolve-TierModelPrincipalSid on an ENGLISH directory" -Tag 'Unit', 'R
 Describe "Resolve-TierModelPrincipalSid on a GERMAN directory" -Tag 'Unit', 'Resolution', 'Canonical', 'Language' {
 
     BeforeEach {
+        InModuleScope TierModel {
+            $script:SidCache = @{}
+            $script:CanonicalDomainSidCache = @{}
+        }
+        Mock Write-TierModelLog { } -ModuleName TierModel
+
         Mock Get-ADDomain {
             [PSCustomObject]@{
                 DNSRoot           = 'test.local'
                 NetBIOSName       = 'TEST'
                 DistinguishedName = 'DC=test,DC=local'
-                DomainSID         = [System.Security.Principal.SecurityIdentifier]::new($script:TestDomainSid)
+                DomainSID         = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-21-1111111111-2222222222-3333333333')
             }
         } -ModuleName TierModel
 
@@ -208,11 +224,11 @@ Describe "Resolve-TierModelPrincipalSid on a GERMAN directory" -Tag 'Unit', 'Res
                 throw "Cannot find an object with identity: '$identityText'"
             }
             $germanNames = @{
-                "$script:TestDomainSid-512" = 'Domänen-Admins'
-                "$script:TestDomainSid-516" = 'Domänencontroller'
-                "$script:TestDomainSid-517" = 'Zertifikatherausgeber'
-                "$script:TestDomainSid-521" = 'Schreibgeschützte Domänencontroller'
-                "$script:TestDomainSid-519" = 'Organisations-Admins'
+                'S-1-5-21-1111111111-2222222222-3333333333-512' = 'Domänen-Admins'
+                'S-1-5-21-1111111111-2222222222-3333333333-516' = 'Domänencontroller'
+                'S-1-5-21-1111111111-2222222222-3333333333-517' = 'Zertifikatherausgeber'
+                'S-1-5-21-1111111111-2222222222-3333333333-521' = 'Schreibgeschützte Domänencontroller'
+                'S-1-5-21-1111111111-2222222222-3333333333-519' = 'Organisations-Admins'
             }
             [PSCustomObject]@{
                 Name = if ($germanNames.ContainsKey($identityText)) { $germanNames[$identityText] } else { "Gruppe $identityText" }
@@ -259,6 +275,12 @@ Describe "Resolve-TierModelPrincipalSid on a GERMAN directory" -Tag 'Unit', 'Res
 Describe "Resolve-TierModelPrincipalSid when a built-in is absent" -Tag 'Unit', 'Resolution', 'Canonical' {
 
     BeforeEach {
+        InModuleScope TierModel {
+            $script:SidCache = @{}
+            $script:CanonicalDomainSidCache = @{}
+        }
+        Mock Write-TierModelLog { } -ModuleName TierModel
+
         # Resolve-ADPrincipalSid refuses to run without the ActiveDirectory module, and the CI
         # runner has no RSAT. Stub the gate so the name-lookup fallback is reachable.
         Mock Get-Module { [PSCustomObject]@{ Name = 'ActiveDirectory'; Version = [version]'1.0.1.0' } } -ModuleName TierModel -ParameterFilter { $Name -eq 'ActiveDirectory' }
@@ -269,7 +291,7 @@ Describe "Resolve-TierModelPrincipalSid when a built-in is absent" -Tag 'Unit', 
                 DNSRoot           = 'child.test.local'
                 NetBIOSName       = 'CHILD'
                 DistinguishedName = 'DC=child,DC=test,DC=local'
-                DomainSID         = [System.Security.Principal.SecurityIdentifier]::new($script:TestDomainSid)
+                DomainSID         = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-21-1111111111-2222222222-3333333333')
             }
         } -ModuleName TierModel
         Mock Get-ADObject { $null } -ModuleName TierModel
@@ -312,7 +334,7 @@ Describe "Resolve-TierModelPrincipalSid when a built-in is absent" -Tag 'Unit', 
             if ("$Identity" -eq 'Tier0Admins') {
                 return [PSCustomObject]@{
                     Name = 'Tier0Admins'
-                    SID  = [System.Security.Principal.SecurityIdentifier]::new("$script:TestDomainSid-1105")
+                    SID  = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-21-1111111111-2222222222-3333333333-1105')
                 }
             }
             throw "Cannot find an object with identity: '$Identity'"
@@ -326,6 +348,16 @@ Describe "Resolve-TierModelPrincipalSid when a built-in is absent" -Tag 'Unit', 
 }
 
 Describe "ConvertTo-TierModelIdentitySid" -Tag 'Unit', 'Resolution', 'Language' {
+
+    BeforeEach {
+        # The SID cache and the memoized domain SID persist for the module session; clear both
+        # so each test observes its own mocks rather than a neighbour's result.
+        InModuleScope TierModel {
+            $script:SidCache = @{}
+            $script:CanonicalDomainSidCache = @{}
+        }
+        Mock Write-TierModelLog { } -ModuleName TierModel
+    }
 
     It "passes a SID string through unchanged" {
         $sid = InModuleScope TierModel { ConvertTo-TierModelIdentitySid -Identity 'S-1-5-10' }
@@ -360,6 +392,16 @@ Describe "ConvertTo-TierModelIdentitySid" -Tag 'Unit', 'Resolution', 'Language' 
 }
 
 Describe "Test-TierModelIdentityMatch" -Tag 'Unit', 'Resolution', 'Language' {
+
+    BeforeEach {
+        # The SID cache and the memoized domain SID persist for the module session; clear both
+        # so each test observes its own mocks rather than a neighbour's result.
+        InModuleScope TierModel {
+            $script:SidCache = @{}
+            $script:CanonicalDomainSidCache = @{}
+        }
+        Mock Write-TierModelLog { } -ModuleName TierModel
+    }
 
     It "matches two spellings of the same SID" {
         $match = InModuleScope TierModel {
