@@ -155,6 +155,19 @@ Run: `.\tests\Invoke-AllTests.ps1` (`-TestType Unit|Integration`, `-FailedOnly`,
 6. **Test house style in the guard tests** (`Unit.DebugProhibition`, `Unit.ModuleManifest`,
    `Unit.AuditReporting`): assert exact integers, never `-BeGreaterThan 0`, and include an
    **anti-vacuity assertion** proving the scan actually read files. Follow it when extending them.
+7. **A hard-coded NTAccount name in a test fixture does not survive a localized host.** Rule 2.5
+   applies to tests exactly as it does to product code. `'BUILTIN\Administrators'`,
+   `'NT AUTHORITY\SELF'` and `'Everyone'` cannot be translated on German Windows — the accounts
+   read `VORDEFINIERT\Administratoren`, `NT-AUTORITÄT\SELBST` and `Jeder` there — so
+   `NTAccount(...).Translate()` throws and the code under test takes a path the test did not
+   intend. Write the SID (`'S-1-5-10'`, `'S-1-5-32-544'`) into the fixture, or derive the name
+   from the SID at run time. Comments in the suite claiming these names *"resolve on any Windows
+   machine"* are wrong; **33 tests fail on German Windows for exactly this reason** (§6).
+8. **`IsDomainAdmin` cannot be mocked.** `Test-TierModelPrerequisites` reads it from the caller's
+   own logon token (`[WindowsIdentity]::GetCurrent()`), deliberately, so that a string-typed SID
+   from the compatibility shim cannot fake membership. On a host where the session really *is* a
+   Domain Admin, the test *"… report not-admin"* therefore fails and nothing in the test can
+   prevent it. Expected; CI does not run as a Domain Admin.
 
 ### Running the suite on Linux
 
@@ -211,7 +224,23 @@ Three further fixes came out of actually executing the code rather than reading 
 `optional/Test-TierModelLocalizedDeployment.ps1` is also part of this branch: a read-only
 post-deployment report covering what the product audit does not (§6 item 6).
 
-**Not verified yet:** the SID-composition core. See §6 and `docs/german-lab-runbook.md`.
+Two test files were then brought onto the new contracts, after the German Windows run showed
+what the Linux harness could not:
+
+- `Unit.GpoOperations` ×2 — rewritten from "a failed Deny-Apply ACE is a warning and the GPO
+  still counts as executed" to "it fails the GPO action". Deliberate, and the reason is spelled
+  out in the `NOTE:` block above that Context so nobody relaxes it back by accident.
+- `Unit.WinLapsAclOperations` ×8 + `Integration.WinLapsDeployment` ×1 — the SELF ACE fixtures
+  carried the literal `'NT AUTHORITY\SELF'`, which German Windows cannot translate, so the
+  product's (correct) SID comparison saw no SELF ACE and reported the delegation as
+  non-compliant. They now carry `'S-1-5-10'`. One of them additionally needed a domain SID in
+  its `Get-ADDomain` mock, because Domain Admins is recognised by RID 512 and not by name.
+
+**The SID-composition core is verified.** `tests/Unit.CanonicalPrincipal.Tests.ps1` ran
+**59 of 59 green on a German Windows host against a German directory** — the 22 tests that
+cannot even execute on Linux are precisely the ones that carry this proof. What remains
+unverified is the *deployment*, not the resolver: see §6 item 5 and
+`docs/german-lab-runbook.md`.
 
 ---
 
@@ -219,28 +248,36 @@ post-deployment report covering what the product audit does not (§6 item 6).
 
 Ordered. Items 1–3 are the actual acceptance gate.
 
-1. **Run the suite on Windows.** The 22 open tests in `tests/Unit.CanonicalPrincipal.Tests.ps1`
-   are exactly the SID-dependent ones; they cannot pass on Linux and are the proof this change
-   needs. Clone, check out the branch, RSAT + GroupPolicy present, `.\tests\Invoke-AllTests.ps1`.
-   No harness needed — the backslash paths are correct there.
-   **`docs/german-lab-runbook.md` is the step-by-step version of this**, including what must be
-   green, what is expected to fail, and what to send back.
-2. **Resolve the remaining baseline delta.** Under the Linux harness, **8** tests moved
-   `Passed → Failed` against `origin/main` (down from 17; the nine that cleared all had one
-   cause, the discarded `sAMAccountName` described in §5):
-   - `Unit.GpoOperations` ×2 still assert the old "Deny-Apply failure is only a warning"
-     contract. They must be rewritten to the new contract deliberately, not quietly.
-     **This is the only remaining piece of real work in this list.**
-   - `Unit.WinLapsAclOperations` ×5 and `Integration.WinLapsDeployment` ×1 — identity
-     comparison, which cannot resolve an identity on Linux at all. Expected to pass on Windows;
-     confirm rather than assume.
+1. ~~**Run the suite on Windows.**~~ **Done.** German Windows 11 / PowerShell 7.6.6 against a
+   German domain, as a Domain Admin: **2053 tests, 2012 passed, 41 failed**, and
+   `tests/Unit.CanonicalPrincipal.Tests.ps1` **59 of 59 green**. That file is the acceptance
+   gate for the resolver and it is now met. `docs/german-lab-runbook.md` Phase A is the
+   repeatable form of this run.
+2. **The 41 failures, classified.** Eight belonged to this branch and are fixed (§5). The
+   remaining **33 are pre-existing** — they fail on `origin/main` on the same host, they live in
+   files this branch does not touch, and their causes are the host's language and the session's
+   own token, not this change:
 
-   Measured figures, for comparison against a future run: baseline 1680 passed of 1994; HEAD
-   1708 passed of 2053; `Unit.CanonicalPrincipal` 37 of 59 (the 22 are the SID wall).
+   | File | × | Cause |
+   |---|--:|---|
+   | `Unit.OuAclOperations` | 10 | fixture `'BUILTIN\Administrators'` / `'BUILTIN\Users'` — untranslatable on German Windows (§4 trap 7) |
+   | `Unit.MsaAclOperations` | 7 | same |
+   | `Unit.GmsaAclOperations` | 7 | same |
+   | `Unit.DmsaAclOperations` | 4 | same |
+   | `Unit.CanonicalAcl` | 3 | `Should -Match 'Everyone\|S-1-1-0'` against the directory's `Jeder` |
+   | `Unit.CanonicalAcl` | 1 | interactive `PreferredDc:` prompt instead of a parameter-binding error — run the suite in a non-interactive window |
+   | `Unit.Prerequisites` | 1 | `IsDomainAdmin` comes from the real logon token (§4 trap 8) |
 
-   Not a regression, and no longer open: `Unit.ModuleManifest` is already only 6 of 63 green on
-   the **baseline**, so the whole file is platform-broken on Linux rather than affected by this
-   change.
+   **Fixing these is a separate concern** (CONTRIBUTING: one concern per PR) and needs its own
+   issue. They are also invisible to CI, which runs English and non-interactive — which is why
+   they survived this long.
+
+   Measured figures for comparison against a future run. Linux harness: baseline 1680 passed of
+   1994; HEAD **1715 of 2053**, 0 regressions against the pre-fix HEAD. Windows: 2012 of 2053,
+   expected to become **2020 of 2053** on the next run.
+
+   Not a regression, and not open: `Unit.ModuleManifest` is already only 6 of 63 green on the
+   **baseline** under Linux, so that file is platform-broken rather than affected by this change.
 3. **Run PSScriptAnalyzer.** Not obtainable in the Linux container (absent from nuget.org;
    PowerShell Gallery and GitHub releases blocked by the network policy). It is a CI gate, so it
    must run somewhere before merge.

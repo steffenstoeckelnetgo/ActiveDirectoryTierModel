@@ -1827,31 +1827,60 @@ Describe "New-TierModelGpo - GPO Creation Execution" -Tag "Unit", "GPO", "Create
         #       CommitChanges / success Write-Host) cannot be covered without production
         #       code changes because it uses [ADSI]$gpcAdsiPath — a direct .NET
         #       constructor that Pester cannot intercept. Any attempt to access
-        #       $gpc.ObjectSecurity in a non-AD environment throws, diverting execution
-        #       into the inner catch block. See Hard Coverage Limits in test-coverage.md.
+        #       $gpc.ObjectSecurity in a non-AD environment throws. See Hard Coverage
+        #       Limits in test-coverage.md.
+        #
+        #       That throw is now FATAL to the GPO action, and these tests pin that
+        #       contract. It used to be downgraded to a yellow console warning while the
+        #       action still counted as Executed = 1. The Deny-Apply ACE is what keeps a
+        #       tier-restriction GPO from ever applying to domain controllers, so a GPO
+        #       that deploys without it is a silently weakened tier boundary reported as
+        #       a success. Raising a failure here is deliberate; do not relax it back to
+        #       a warning without design sign-off (CONTRIBUTING.md, PR requirement 3).
 
-        It "Should enter denyApplyGroupPolicy loop and handle ADSI failure gracefully" {
-            # ADSI will fail with no real AD; execution falls into inner catch.
-            # The GPO should still be counted as executed (non-fatal ACL error).
+        It "Should fail the GPO action when the Deny-Apply ACE cannot be written" {
+            # The principal resolves, so the failure comes from the [ADSI] bind that
+            # follows — exactly the case the old contract swallowed.
+            Mock Resolve-TierModelPrincipalSid -ModuleName TierModel {
+                return [PSCustomObject]@{ Success = $true; Sid = 'S-1-5-32-544'; Error = $null }
+            }
+
             $result = New-TierModelGpo -Plan (New-GpoPlan -Actions @(
                 New-CreateAction -Name "DenyAclGPO" -Extra @{
                     denyApplyGroupPolicy = @("TierAdmins")
                 }
             )) -DomainController "DC01"
 
-            $result.Executed | Should -Be 1
-            $result.Failed   | Should -Be 0
+            $result.Executed  | Should -Be 0
+            $result.Failed    | Should -Be 1
+            $result.Converged | Should -Be $false
+
+            # Anti-vacuity: the failure must come from the Deny-Apply path and name the
+            # group, not from some other step of GPO creation that also throws here.
+            @($result.Errors).Count      | Should -Be 1
+            @($result.Errors)[0].Code    | Should -Be 'GPOCreationFailed'
+            @($result.Errors)[0].Message | Should -Match "Deny-Apply ACL for 'TierAdmins'"
         }
 
-        It "Should process multiple denyApply groups and remain non-fatal for each" {
+        It "Should stop at the first Deny-Apply failure instead of continuing with the rest" {
+            Mock Resolve-TierModelPrincipalSid -ModuleName TierModel {
+                return [PSCustomObject]@{ Success = $true; Sid = 'S-1-5-32-544'; Error = $null }
+            }
+
             $result = New-TierModelGpo -Plan (New-GpoPlan -Actions @(
                 New-CreateAction -Name "MultiDenyGPO" -Extra @{
                     denyApplyGroupPolicy = @("GroupA", "GroupB", "GroupC")
                 }
             )) -DomainController "DC01"
 
-            $result.Executed | Should -Be 1
-            $result.Failed   | Should -Be 0
+            $result.Executed        | Should -Be 0
+            $result.Failed          | Should -Be 1
+
+            # One error naming the FIRST group: the throw leaves the foreach immediately
+            # instead of attempting GroupB and GroupC and collecting three warnings.
+            @($result.Errors).Count      | Should -Be 1
+            @($result.Errors)[0].Message | Should -Match "Deny-Apply ACL for 'GroupA'"
+            @($result.Errors)[0].Message | Should -Not -Match "GroupC"
         }
 
         It "Should skip denyApplyGroupPolicy block when property is absent" {

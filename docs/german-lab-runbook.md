@@ -12,6 +12,10 @@ security configuration as an English one. That claim **cannot be proven on Linux
 always throws. Of the 59 tests in `tests/Unit.CanonicalPrincipal.Tests.ps1`, 37 pass on Linux;
 **the 22 that do not are exactly the ones that prove this change works.**
 
+**Phase A has been run and passed** (2026-09-15, German Windows 11 / PowerShell 7.6.6 against a
+German domain): all 59 are green. Phases B onwards — everything that actually writes to a
+directory — are still open, and no unit test substitutes for them.
+
 Every command below was checked against the `param()` block of the script it calls.
 
 ---
@@ -41,13 +45,18 @@ git clone https://github.com/steffenstoeckelnetgo/ActiveDirectoryTierModel
 cd ActiveDirectoryTierModel
 git checkout claude/beautiful-galileo-skfp32
 
-# Pester 5.x only - Pester 6 has a different mock engine and is explicitly out of scope.
-# config/dependencies.json pins 5.7.1, which Test-TierModelPrerequisites checks against.
-Install-Module Pester -MinimumVersion 5.0.0 -MaximumVersion 5.99.99 -Force -Scope CurrentUser
+# Pester 5.9.0 exactly. tests/Invoke-AllTests.ps1 pins that version as known-good and warns
+# "suite may not be fully green" on anything else; a version range installs the newest 5.x and
+# triggers the warning. Pester 6 has a different mock engine and is explicitly out of scope.
+Install-Module Pester -RequiredVersion 5.9.0 -Force -Scope CurrentUser
 Install-Module PSScriptAnalyzer -Force -Scope CurrentUser
 ```
 
 ### A1 — Full test suite
+
+Run it in a **non-interactive-friendly** window and do not type into it. One test
+(*"ByBytes does not require -PreferredDc"*) invokes a cmdlet expecting a parameter-binding
+error; an interactive host answers with a `PreferredDc:` prompt instead and the test waits.
 
 ```powershell
 .\tests\Invoke-AllTests.ps1
@@ -57,18 +66,26 @@ Install-Module PSScriptAnalyzer -Force -Scope CurrentUser
 
 | | Expected |
 |---|---|
-| `tests\Unit.CanonicalPrincipal.Tests.ps1` | **59 of 59 green.** On Linux 22 fail purely because a SID cannot be constructed; here there is no such excuse. |
-| Everything else | Green, with the exception noted below. |
+| `tests\Unit.CanonicalPrincipal.Tests.ps1` | **59 of 59 green.** This is the acceptance gate for the resolver. On Linux 22 of them fail purely because a SID cannot be constructed there; here there is no such excuse. Confirmed green on 2026-09-15. |
+| `Unit.WinLapsAclOperations`, `Integration.WinLapsDeployment`, `Unit.GpoOperations` | Green. |
+| Total | **2020 of 2053**, with the 33 known failures below. |
 
-**Known and expected to fail:** two tests in `tests\Unit.GpoOperations.Tests.ps1` —
-*"Should enter denyApplyGroupPolicy loop and handle ADSI failure gracefully"* and *"Should
-process multiple denyApply groups and remain non-fatal for each"*. They assert the **old**
-contract, where a failed Deny-Apply ACE was only a console warning. That behaviour was
-deliberately changed: a tier-restriction GPO must not deploy without its domain-controller
-protection while the run reports success. These two tests need rewriting to the new contract;
-that is tracked work, not a surprise.
+**Known to fail, and not this branch's doing.** All 33 also fail on `origin/main` on the same
+host. They are English-only test fixtures meeting a German Windows host, plus one that reads the
+session's real token. CI never sees them because it runs English and non-interactive. They have
+their own issue; do not chase them here.
 
-If anything **else** fails, capture it — it is a genuine finding.
+| File | × | Cause |
+|---|--:|---|
+| `Unit.OuAclOperations` | 10 | fixture `'BUILTIN\Administrators'` / `'BUILTIN\Users'` — German Windows has `VORDEFINIERT\Administratoren`, so `NTAccount(...).Translate()` throws |
+| `Unit.MsaAclOperations` | 7 | same |
+| `Unit.GmsaAclOperations` | 7 | same |
+| `Unit.DmsaAclOperations` | 4 | same |
+| `Unit.CanonicalAcl` | 3 | asserts `Everyone\|S-1-1-0`; the directory renders `Jeder` |
+| `Unit.CanonicalAcl` | 1 | the interactive prompt described above |
+| `Unit.Prerequisites` | 1 | *"… report not-admin"* — `IsDomainAdmin` comes from `[WindowsIdentity]::GetCurrent()`, and this session really is a Domain Admin. No mock can change that. |
+
+If anything **else** fails, capture it — that is a genuine finding.
 
 ```powershell
 .\tests\Invoke-AllTests.ps1 -FailedOnly   # compact list of failures only

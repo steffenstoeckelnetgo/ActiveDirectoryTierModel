@@ -65,6 +65,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   additionally compares the container DNs `Get-ADDomain` reports.
 - `docs/language-support.md` rewritten: the English-only policy and the "community
   language packs" roadmap are replaced by the SID-resolution mechanism and its rationale.
+- Tests brought onto the new contracts: `Unit.GpoOperations` now pins "a failed Deny-Apply
+  ACE fails the GPO action" instead of the warn-and-continue behaviour it replaced, and the
+  Windows LAPS SELF fixtures carry the SID `S-1-5-10` rather than the literal
+  `NT AUTHORITY\SELF`, which a localized host cannot translate and which therefore made the
+  correct SID comparison look like a failure.
 
 ### Changed
 - Reworded documentation and comment attribution that named individual AI agent
