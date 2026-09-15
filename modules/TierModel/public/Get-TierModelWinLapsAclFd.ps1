@@ -237,6 +237,8 @@ function Get-TierModelWinLapsAclFd {
         # For each delegation, check existing state and plan actions
         foreach ($delegation in $delegations) {
             $resolvedOuDn = Resolve-TierModelPlaceholder -Path $delegation.ouDn -DomainDN $domainDN
+            $isDcOuForDn = if ($delegation.PSObject.Properties['isDomainControllerOu']) { [bool]$delegation.isDomainControllerOu } else { $false }
+            $resolvedOuDn = Resolve-TierModelDelegationOuDn -ConfiguredDn $resolvedOuDn -IsDomainControllerOu $isDcOuForDn -DomainController $DomainController
             $ouName = if ($resolvedOuDn -match '^OU=([^,]+)') { $matches[1] } else { $resolvedOuDn }
 
             # Normalize readGroup/resetGroup to arrays and resolve

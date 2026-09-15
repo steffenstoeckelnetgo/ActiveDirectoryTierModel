@@ -161,6 +161,8 @@ function Test-TierModelWinLapsAcl {
         foreach ($delegation in @($Config.winLapsDelegations)) {
             $totalChecked++
             $resolvedOuDn = Resolve-TierModelPlaceholder -Path $delegation.ouDn -DomainDN $domainDN
+            $isDcOuForDn = if ($delegation.PSObject.Properties['isDomainControllerOu']) { [bool]$delegation.isDomainControllerOu } else { $false }
+            $resolvedOuDn = Resolve-TierModelDelegationOuDn -ConfiguredDn $resolvedOuDn -IsDomainControllerOu $isDcOuForDn -DomainController $DomainController
             $ouName = if ($resolvedOuDn -match '^OU=([^,]+)') { $matches[1] } else { $resolvedOuDn }
             $identifier = "LAPS → $ouName"
 

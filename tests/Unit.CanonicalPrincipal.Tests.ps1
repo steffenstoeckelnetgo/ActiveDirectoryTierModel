@@ -49,20 +49,22 @@ BeforeAll {
     }
 
     # Built-ins with an absolute SID: served by the static table, no directory read at all.
+    # Only the bare aliases the configuration actually uses are in that table - a bare name
+    # shadows a customer's own domain group of the same name, so the list is deliberately short.
     $script:AbsoluteSidExpectations = @{
-        'Administrators'          = 'S-1-5-32-544'
-        'Users'                   = 'S-1-5-32-545'
-        'Guests'                  = 'S-1-5-32-546'
-        'Account Operators'       = 'S-1-5-32-548'
-        'Server Operators'        = 'S-1-5-32-549'
-        'Backup Operators'        = 'S-1-5-32-551'
-        'Cryptographic Operators' = 'S-1-5-32-569'
-        'IIS_IUSRS'               = 'S-1-5-32-568'
-        'Authenticated Users'     = 'S-1-5-11'
-        'SYSTEM'                  = 'S-1-5-18'
-        'Everyone'                = 'S-1-1-0'
-        'Local account'           = 'S-1-5-113'
-        'SELF'                    = 'S-1-5-10'
+        'Administrators'            = 'S-1-5-32-544'
+        'Users'                     = 'S-1-5-32-545'
+        'Guests'                    = 'S-1-5-32-546'
+        'Backup Operators'          = 'S-1-5-32-551'
+        'Cryptographic Operators'   = 'S-1-5-32-569'
+        'IIS_IUSRS'                 = 'S-1-5-32-568'
+        'Authenticated Users'       = 'S-1-5-11'
+        'SYSTEM'                    = 'S-1-5-18'
+        'Everyone'                  = 'S-1-1-0'
+        'Local account'             = 'S-1-5-113'
+        'BUILTIN\Server Operators'  = 'S-1-5-32-549'
+        'BUILTIN\Account Operators' = 'S-1-5-32-548'
+        'NT AUTHORITY\SELF'         = 'S-1-5-10'
     }
 }
 
@@ -114,6 +116,23 @@ Describe "Get-TierModelCanonicalPrincipal" -Tag 'Unit', 'Resolution', 'Canonical
         param($Name)
         $entry = InModuleScope TierModel -Parameters @{ N = $Name } { Get-TierModelCanonicalPrincipal -Principal $N }
         $entry | Should -BeNullOrEmpty
+    }
+
+    It "does not shadow a customer domain group named <Name>" -TestCases @(
+        @{ Name = 'Remote Desktop Users' }
+        @{ Name = 'Event Log Readers' }
+        @{ Name = 'Print Operators' }
+        @{ Name = 'Performance Monitor Users' }
+    ) {
+        param($Name)
+        # These are legal names for a CUSTOM domain group. Putting the bare alias in the
+        # well-known table would silently resolve the customer's group to the BUILTIN SID
+        # instead - a behaviour change the previous name lookup did not have. Only the
+        # "BUILTIN\..." form, which cannot collide, is listed for them.
+        $wellKnown = InModuleScope TierModel -Parameters @{ N = $Name } { Get-WellKnownSid -Principal $N }
+        $wellKnown | Should -BeNullOrEmpty
+        $prefixed = InModuleScope TierModel -Parameters @{ N = "BUILTIN\$Name" } { Get-WellKnownSid -Principal $N }
+        $prefixed | Should -Not -BeNullOrEmpty
     }
 
     It "does not claim Administrator, which keeps its own RID 500 path" {
@@ -177,7 +196,7 @@ Describe "Resolve-TierModelPrincipalSid on an ENGLISH directory" -Tag 'Unit', 'R
     }
 
     It "serves absolute built-in <Name> from the static table without a directory read" -TestCases @(
-        foreach ($k in @('Administrators', 'Guests', 'Server Operators', 'Cryptographic Operators', 'Authenticated Users', 'SYSTEM')) {
+        foreach ($k in @('Administrators', 'Guests', 'BUILTIN\Server Operators', 'Cryptographic Operators', 'Authenticated Users', 'SYSTEM')) {
             @{ Name = $k }
         }
     ) {
@@ -266,9 +285,9 @@ Describe "Resolve-TierModelPrincipalSid on a GERMAN directory" -Tag 'Unit', 'Res
     }
 
     It "still serves absolute built-ins, which never need the directory" {
-        $result = Resolve-TierModelPrincipalSid -Principal 'Server Operators' -DomainController $script:TestDc
+        $result = Resolve-TierModelPrincipalSid -Principal 'Cryptographic Operators' -DomainController $script:TestDc
         $result.Success | Should -Be $true
-        $result.Sid | Should -Be 'S-1-5-32-549'
+        $result.Sid | Should -Be 'S-1-5-32-569'
     }
 }
 

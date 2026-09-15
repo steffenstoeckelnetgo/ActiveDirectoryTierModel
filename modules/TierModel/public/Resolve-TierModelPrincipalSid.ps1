@@ -903,33 +903,25 @@ function Get-WellKnownSid {
         # config/tiermodel-gpos.json. Their SIDs are fixed in every Windows language, so
         # resolving them here keeps a localised (e.g. German) domain off the name-lookup
         # path entirely - see specs/008-german-language-support/spec.md.
+        #
+        # DELIBERATELY LIMITED to the bare names the configuration actually uses. A bare name
+        # here SHADOWS a customer's own domain group of the same name, which would previously
+        # have resolved by name: 'Remote Desktop Users' or 'Event Log Readers' are perfectly
+        # legal names for a custom domain group. Entries carrying the "BUILTIN\" prefix cannot
+        # collide that way and are safe to list exhaustively. Do not add a bare alias here
+        # without a configuration entry that needs it.
         "Administrators" = "S-1-5-32-544"
         "Users" = "S-1-5-32-545"
         "Guests" = "S-1-5-32-546"
-        "Power Users" = "S-1-5-32-547"
-        "Account Operators" = "S-1-5-32-548"
-        "Server Operators" = "S-1-5-32-549"
-        "Print Operators" = "S-1-5-32-550"
         "Backup Operators" = "S-1-5-32-551"
-        "Replicator" = "S-1-5-32-552"
-        "Remote Desktop Users" = "S-1-5-32-555"
-        "Network Configuration Operators" = "S-1-5-32-556"
-        "Performance Monitor Users" = "S-1-5-32-558"
-        "Performance Log Users" = "S-1-5-32-559"
-        "Distributed COM Users" = "S-1-5-32-562"
         "IIS_IUSRS" = "S-1-5-32-568"
         "Cryptographic Operators" = "S-1-5-32-569"
-        "Event Log Readers" = "S-1-5-32-573"
-        "Certificate Service DCOM Access" = "S-1-5-32-574"
-        "Remote Management Users" = "S-1-5-32-580"
         "SYSTEM" = "S-1-5-18"
         "Authenticated Users" = "S-1-5-11"
         "ANONYMOUS LOGON" = "S-1-5-7"
         "Local account" = "S-1-5-113"
         "IUSR" = "S-1-5-17"
-        "SELF" = "S-1-5-10"
         "NT AUTHORITY\SELF" = "S-1-5-10"
-        "Enterprise Domain Controllers" = "S-1-5-9"
         "NT AUTHORITY\ENTERPRISE DOMAIN CONTROLLERS" = "S-1-5-9"
     }
     

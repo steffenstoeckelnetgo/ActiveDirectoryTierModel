@@ -265,6 +265,7 @@ function Get-TierModelWinLapsAcl {
         foreach ($delegation in $delegations) {
             $resolvedOuDn = Resolve-TierModelPlaceholder -Path $delegation.ouDn -DomainDN $domainDN
             $isDcOu = if ($delegation.PSObject.Properties['isDomainControllerOu']) { $delegation.isDomainControllerOu } else { $false }
+            $resolvedOuDn = Resolve-TierModelDelegationOuDn -ConfiguredDn $resolvedOuDn -IsDomainControllerOu ([bool]$isDcOu) -DomainController $DomainController
             if (-not $isDcOu) {
                 try {
                     # SilentlyContinue is INTENTIONAL here. "No DC objects in this OU" is the
