@@ -86,6 +86,28 @@ error; an interactive host answers with a `PreferredDc:` prompt instead and the 
 .\tests\Invoke-AllTests.ps1
 ```
 
+**Ignore the console output until the very end. It looks far worse than it is.** The integration
+tests drive the real `Deploy-TierModel.ps1` and `Audit-TierModel.ps1` with mocked prerequisites
+and fixture data, so the suite deliberately prints things that read like a broken environment:
+
+| What you see | What it is |
+|---|---|
+| `Preferred DC: testdc.contoso.local` | A fixture name hard-coded in the integration tests (`Integration.Audit.Tests.ps1:25` and three others). It is **not** read from your environment and has nothing to do with your DC. |
+| `PowerShell version too old` / `Not running as Domain Admin` | A **mocked** `Test-TierModelPrerequisites` result (`Integration.Audit.Tests.ps1:330-336`). The test asserts that the script prints the remediation and exits 1. Your host is not being checked here. |
+| `Failed to resolve the domain distinguished name from 'testdc.contoso.local'` | The failure path under test. That host does not exist, which is the point. |
+| Dozens of `Configuration validation completed … Valid=False` warnings | The fixture configs (`TestOU1`, `TestGroup1`, `TestUser1`) are intentionally incomplete. |
+| `Deployment cancelled by user` | A mocked `Read-Host` answering "no", to cover the cancel branch. |
+
+None of it means the run is going wrong. **The run takes roughly eight minutes**; the only line
+that decides anything is the summary at the end:
+
+```
+Tests completed in <n>s
+Tests Passed: 2020, Failed: 33, Skipped: 0, ...
+```
+
+Let it finish. Aborting mid-way tells you nothing.
+
 **What must be true**
 
 | | Expected |
