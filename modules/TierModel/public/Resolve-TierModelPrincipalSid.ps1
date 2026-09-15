@@ -9,6 +9,21 @@ function Resolve-TierModelPrincipalSid {
     .DESCRIPTION
     Converts security principal names (users, groups, well-known principals) to SIDs.
     Supports caching for performance and handles well-known SIDs directly.
+
+    Built-in principals are resolved BY SID, never by directory name. Active Directory localizes
+    the names of its built-in principals at domain creation and an administrator can rename them,
+    so 'Domain Admins' is 'Domaenen-Admins' on a German domain and a name lookup finds nothing.
+    The English names in config/*.json are therefore canonical identifiers: they map to a
+    well-known RID, the SID is composed against the domain being deployed to, and the object is
+    read back by that SID to confirm it exists. See specs/008-german-language-support/spec.md.
+
+    Resolution order:
+      1. Direct SID passthrough
+      2. Administrator (RID 500) - cache-bypassing, handles the renamed built-in account
+      3. Session cache
+      4. Get-WellKnownSid          - absolute SIDs (BUILTIN\*, NT AUTHORITY\*), no directory read
+      5. Canonical RID composition - domain- and forest-root-relative built-ins
+      6. Name lookup               - Tier Model-owned groups, DnsAdmins, everything else
     
     Special handling for "Administrator" account:
     - When resolving "Administrator", first attempts to find the built-in Administrator account (RID 500)

@@ -384,11 +384,7 @@ function Test-TierModelPrerequisites {
                     $domainAdmins = $null
                     try {
                         $daDomain = Get-ADDomain -Server $PreferredDc -ErrorAction Stop
-                        $daDomainSid = if ($daDomain.DomainSID -is [System.Security.Principal.SecurityIdentifier]) {
-                            $daDomain.DomainSID.Value
-                        } else {
-                            [string]$daDomain.DomainSID
-                        }
+                        $daDomainSid = Get-TierModelDomainSidValue -Domain $daDomain
                         if (-not [string]::IsNullOrWhiteSpace($daDomainSid)) {
                             $domainAdmins = Get-ADGroup -Identity "$daDomainSid-512" -Server $PreferredDc -ErrorAction SilentlyContinue
                         }
@@ -475,13 +471,7 @@ function Test-TierModelPrerequisites {
                             # SilentlyContinue is INTENTIONAL here. Enterprise Admins legitimately
                             # does not exist in a child domain, so absence is a supported configuration, not
                             # an error. Do not change to Stop.
-                            $eaDomainSid = if ($domain -and $domain.DomainSID -is [System.Security.Principal.SecurityIdentifier]) {
-                                $domain.DomainSID.Value
-                            } elseif ($domain) {
-                                [string]$domain.DomainSID
-                            } else {
-                                $null
-                            }
+                            $eaDomainSid = Get-TierModelDomainSidValue -Domain $domain
                             $enterpriseAdmins = if (-not [string]::IsNullOrWhiteSpace($eaDomainSid)) {
                                 Get-ADGroup -Identity "$eaDomainSid-519" -Server $PreferredDc -ErrorAction SilentlyContinue
                             } else {
@@ -892,4 +882,50 @@ function Test-TierModelPrerequisites {
         # Ensure we return exactly one object
         Write-Output $result
     }
+}
+
+function Get-TierModelDomainSidValue {
+    <#
+    .SYNOPSIS
+    Reads the domain SID out of a Get-ADDomain result in whatever shape it arrives.
+
+    .DESCRIPTION
+    Private helper (not exported). DomainSID is normally a SecurityIdentifier, but comes back as a
+    plain String through the Windows PowerShell Compatibility shim, and is absent altogether from
+    some partial objects. Set-StrictMode -Version Latest turns that absence into a terminating
+    error on plain property access, so the property is probed rather than dereferenced.
+
+    Returns $null when no usable SID is present; callers must treat that as "unknown".
+
+    .PARAMETER Domain
+    The object returned by Get-ADDomain.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [AllowNull()]
+        $Domain
+    )
+
+    if ($null -eq $Domain) { return $null }
+
+    $sidProperty = $Domain.PSObject.Properties['DomainSID']
+    if (-not $sidProperty) { return $null }
+
+    $sidValue = $sidProperty.Value
+    if ($null -eq $sidValue) { return $null }
+
+    $text = if ($sidValue -is [System.Security.Principal.SecurityIdentifier]) {
+        $sidValue.Value
+    }
+    elseif ($sidValue -is [string]) {
+        $sidValue
+    }
+    else {
+        $nestedValue = $sidValue.PSObject.Properties['Value']
+        if ($nestedValue) { [string]$nestedValue.Value } else { [string]$sidValue }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($text)) { return $null }
+    return $text.Trim()
 }
