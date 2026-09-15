@@ -1,3 +1,78 @@
+# Is a GPO's policy actually populated in SYSVOL, or was it created and never filled?
+#
+# WHY THIS EXISTS
+# Get-TierModelGpo used to emit Create/Import/Configure only for a GPO that does not exist yet.
+# A GPO whose CreateGPO succeeded but whose ImportGPO failed was therefore never repaired: the
+# next run saw it as existing, planned nothing but a link, and the deployment reported Converged
+# while the policy stayed empty. Only the audit noticed (Test-TierModelGPOContent: "GptTmpl.inf
+# file is missing from GPO"). That breaks constitution principle III at its core.
+#
+# THE ANSWER IS DELIBERATELY ASYMMETRIC. $false means "provably empty" and is the only answer
+# that causes a re-import. Everything else - folder not replicated to this host, SYSVOL
+# unreachable, any exception at all - returns $true, i.e. "leave it alone". Re-importing
+# overwrites a GPO's settings from the backup, so it must never happen on a state we could not
+# read. The cost of a false $true is an unrepaired GPO the audit still reports; the cost of a
+# false $false is silently discarding settings.
+#
+# KNOWN LIMIT: a backup that legitimately contains no Machine/User files at all would read as
+# empty on every run and be re-imported every run. None of the 123 configured backups is of that
+# shape, and a second deployment run reporting zero actions is the standing check for it.
+function Test-TierModelGpoPolicyPopulated {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory)]
+        [object]$Gpo,
+
+        [Parameter(Mandatory)]
+        [string]$DomainController,
+
+        # createImportAndConfigure / importAndConfigure additionally need GptTmpl.inf, which is
+        # written by Update-TierModelGPOConfig rather than by the import.
+        [Parameter(Mandatory)]
+        [bool]$RequiresGptTmpl
+    )
+
+    try {
+        if (-not $script:TierModelSysvolBase) {
+            $domain = Get-ADDomain -Server $DomainController -ErrorAction Stop
+            # Update-TierModelGPOConfig writes through the PDC emulator, so read where it writes.
+            # StrictMode is on: probe for the property rather than assuming it.
+            $sysvolHost = if ($domain.PSObject.Properties['PDCEmulator'] -and $domain.PDCEmulator) {
+                $domain.PDCEmulator
+            } else {
+                $DomainController
+            }
+            $script:TierModelSysvolBase = "\\$sysvolHost\SYSVOL\$($domain.DNSRoot)\Policies"
+        }
+
+        # Composed as plain strings, not with Join-Path: Join-Path resolves the path's provider
+        # and throws on a UNC root where no drive can be derived, which would send every probe
+        # into the catch below and quietly disable the self-heal.
+        $policyRoot = "$script:TierModelSysvolBase\{$($Gpo.Id)}"
+
+        # No folder here means this GPO has not replicated to this host - not that it is empty.
+        if (-not (Test-Path -Path $policyRoot)) { return $true }
+
+        if ($RequiresGptTmpl) {
+            return [bool](Test-Path -Path "$policyRoot\Machine\Microsoft\Windows NT\SecEdit\GptTmpl.inf")
+        }
+
+        # New-GPO leaves Machine\ and User\ empty and puts GPT.INI in the policy root, so any
+        # file below those two folders means an import has run.
+        $settings = @(Get-ChildItem -Path "$policyRoot\Machine", "$policyRoot\User" -Recurse -File -ErrorAction SilentlyContinue)
+        return ($settings.Count -gt 0)
+
+    } catch {
+        Write-TierModelLog -Level Warning -Message "GPO policy content could not be read from SYSVOL - assuming it is intact" -Data @{
+            GPOName   = $Gpo.DisplayName
+            GPOId     = [string]$Gpo.Id
+            Exception = $_.Exception.Message
+        } | Out-Null
+        return $true
+    }
+}
+
 function Get-TierModelGpo {
     <#
     .SYNOPSIS
@@ -56,6 +131,9 @@ function Get-TierModelGpo {
         # Initialize plan structure
         $planActions = @()
         $planErrors = @()
+        # Resolved lazily by Test-TierModelGpoPolicyPopulated, reset per run so a planning call
+        # never inherits another domain's SYSVOL root.
+        $script:TierModelSysvolBase = $null
         $warnings = @()
         $errors = @()
         # Attribution collections (BUG: dropped GPOs were never named to the operator).
@@ -372,6 +450,31 @@ function Get-TierModelGpo {
                                 # GPO exists, check if it's linked to the target OU
                                 # Count this GPO as pre-existing (real count, not derived arithmetic)
                                 if ($existingGpoNames -notcontains $actualGpoName) { $existingGpoNames += $actualGpoName }
+
+                                # SELF-HEAL: a GPO can exist and still be unfinished - CreateGPO
+                                # succeeds, then ImportGPO fails, and without this the planner
+                                # would only ever plan the link again and report Converged over an
+                                # empty policy. Only a positive "this policy is empty" re-plans;
+                                # an unreadable SYSVOL deliberately changes nothing. See
+                                # Test-TierModelGpoPolicyPopulated.
+                                if ($gpoMode -in @('createAndImport', 'createImportAndConfigure') -and
+                                    -not (Test-TierModelGpoPolicyPopulated -Gpo $existingGPO -DomainController $DomainController -RequiresGptTmpl $false)) {
+
+                                    if (-not $Silent) {
+                                        Write-Host "  ■ Re-import GPO (policy is empty): $actualGpoName" -ForegroundColor Yellow
+                                    }
+
+                                    $planActions += [PSCustomObject]@{
+                                        Action = 'ImportGPO'
+                                        ResourceType = 'GPO'
+                                        Name = "$actualGpoName (Import)"
+                                        Path = $resolvedOUPath
+                                        Data = $gpo
+                                        GPOName = $actualGpoName
+                                        Phase = 2
+                                    }
+                                    $riskSummary.Import++
+                                }
                                 $gpoLinked = $false
                                 try {
                                     # Check if GPO is linked to this OU
@@ -644,6 +747,49 @@ function Get-TierModelGpo {
                                 # GPO exists, check if it's linked to the target OU
                                 # Count this GPO as pre-existing (real count, not derived arithmetic)
                                 if ($existingGpoNames -notcontains $actualGpoName) { $existingGpoNames += $actualGpoName }
+
+                                # SELF-HEAL: a GPO can exist and still be unfinished - CreateGPO
+                                # succeeds, then ImportGPO fails, and without this the planner
+                                # would only ever plan the link again and report Converged over an
+                                # empty policy. Only a positive "this policy is empty" re-plans;
+                                # an unreadable SYSVOL deliberately changes nothing. See
+                                # Test-TierModelGpoPolicyPopulated.
+                                $needsImport = $gpoMode -in @('createAndImport', 'createImportAndConfigure')
+                                $needsConfigure = $gpoMode -in @('createImportAndConfigure', 'importAndConfigure')
+
+                                if (($needsImport -or $needsConfigure) -and
+                                    -not (Test-TierModelGpoPolicyPopulated -Gpo $existingGPO -DomainController $DomainController -RequiresGptTmpl $needsConfigure)) {
+
+                                    if (-not $Silent) {
+                                        Write-Host "  ■ Re-import GPO (policy is empty): $actualGpoName" -ForegroundColor Yellow
+                                    }
+
+                                    if ($needsImport) {
+                                        $planActions += [PSCustomObject]@{
+                                            Action = 'ImportGPO'
+                                            ResourceType = 'GPO'
+                                            Name = "$actualGpoName (Import)"
+                                            Path = $resolvedOUPath
+                                            Data = $gpo
+                                            GPOName = $actualGpoName
+                                            Phase = 2
+                                        }
+                                        $riskSummary.Import++
+                                    }
+
+                                    if ($needsConfigure) {
+                                        $planActions += [PSCustomObject]@{
+                                            Action = 'ConfigureGPO'
+                                            ResourceType = 'GPO'
+                                            Name = "$actualGpoName (Configure)"
+                                            Path = $resolvedOUPath
+                                            Data = $gpo
+                                            GPOName = $actualGpoName
+                                            Phase = 3
+                                        }
+                                        $riskSummary.Update++
+                                    }
+                                }
                                 $gpoLinked = $false
                                 try {
                                     # Check if GPO is linked to this OU

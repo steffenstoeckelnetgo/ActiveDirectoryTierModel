@@ -72,8 +72,17 @@ function Import-TierModelGpo {
                         $importPath = Join-Path $basePath $gpoData.importPath
                         if (Test-Path $importPath) {
                             # Import source: $importPath (removed verbose message)
-                            # Capture Import-GPO output to prevent it from interfering with our return object
-                            $null = Import-GPO -BackupId (Split-Path $importPath -Leaf) -TargetName $gpoName -Path (Split-Path $importPath -Parent) -Server $DomainController -ErrorAction Stop
+                            # Capture Import-GPO output to prevent it from interfering with our return object.
+                            #
+                            # Wrapped in the transient retry because Import-GPO clears the target
+                            # policy folder in SYSVOL before copying into it: back-to-back imports
+                            # - and a full run does 123, several from the same backup source - can
+                            # meet a folder the previous import has not finished releasing, which
+                            # surfaces as ERROR_DIR_NOT_EMPTY. Non-transient failures still throw
+                            # on the first attempt; see Invoke-TierModelTransientRetry.
+                            $null = Invoke-TierModelTransientRetry -Operation 'Import-GPO' -Subject $gpoName -CorrelationId $CorrelationId -ScriptBlock {
+                                Import-GPO -BackupId (Split-Path $importPath -Leaf) -TargetName $gpoName -Path (Split-Path $importPath -Parent) -Server $DomainController -ErrorAction Stop
+                            }
                             
                             Write-TierModelLog -Level Info -Message "GPO settings imported successfully" -Data @{
                                 GPOName = $gpoName

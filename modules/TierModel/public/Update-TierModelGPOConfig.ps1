@@ -98,10 +98,18 @@ function Update-TierModelGPOConfig {
                     
                     # SYSVOL path: $gpoSysvolPath (removed verbose message)
                     
-                    # Ensure the Machine folder exists
+                    # Ensure the Machine folder exists.
+                    #
+                    # The three SYSVOL writes below are retried for transient conditions. A GPO
+                    # whose import has just failed can leave its policy folder half-cleared, and
+                    # the next touch on it comes back "Access to the path ... is denied" - that
+                    # is the second failure the German lab run produced. See
+                    # Invoke-TierModelTransientRetry; a non-transient failure still throws at once.
                     if (-not (Test-Path -Path $gpoSysvolPath)) {
                         Write-Host "    Creating Machine folder..." -ForegroundColor Cyan
-                        New-Item -Path $gpoSysvolPath -ItemType Directory -Force | Out-Null
+                        Invoke-TierModelTransientRetry -Operation 'New-Item (Machine)' -Subject $gpoName -CorrelationId $CorrelationId -ScriptBlock {
+                            New-Item -Path $gpoSysvolPath -ItemType Directory -Force
+                        } | Out-Null
                     }
                     
                     # Build path to GptTmpl.inf
@@ -111,7 +119,9 @@ function Update-TierModelGPOConfig {
                     $secEditFolder = Split-Path $gptTmplPath -Parent
                     if (-not (Test-Path -Path $secEditFolder)) {
                         Write-Host "    Creating SecEdit folder structure..." -ForegroundColor Cyan
-                        New-Item -Path $secEditFolder -ItemType Directory -Force | Out-Null
+                        Invoke-TierModelTransientRetry -Operation 'New-Item (SecEdit)' -Subject $gpoName -CorrelationId $CorrelationId -ScriptBlock {
+                            New-Item -Path $secEditFolder -ItemType Directory -Force
+                        } | Out-Null
                     }
                     
                     # Generate GptTmpl.inf content using standardized function
@@ -127,7 +137,9 @@ function Update-TierModelGPOConfig {
                     
                     # Write GptTmpl.inf file with proper encoding
                     # Use UTF-16LE encoding for Windows INF files
-                    $gptTmplContent | Out-File -FilePath $gptTmplPath -Encoding Unicode -Force
+                    Invoke-TierModelTransientRetry -Operation 'Out-File (GptTmpl.inf)' -Subject $gpoName -CorrelationId $CorrelationId -ScriptBlock {
+                        $gptTmplContent | Out-File -FilePath $gptTmplPath -Encoding Unicode -Force
+                    } | Out-Null
                     
                     # Validate the file was created successfully
                     if (Test-Path -Path $gptTmplPath) {

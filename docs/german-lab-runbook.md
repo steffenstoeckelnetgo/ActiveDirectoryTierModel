@@ -270,6 +270,55 @@ second run are the whole record.
 
 One `Y` confirmation (two if you add `-EnableAuditing`).
 
+### If Phase C ends with errors
+
+The first run of this phase (2026-09-15) did, and the three causes it exposed are fixed in this
+branch. What to expect now, and what to check if something still fails:
+
+**The deploy is expected to repair itself.** A GPO whose create succeeded and whose import
+failed used to be invisible to every later run — the planner only re-planned a GPO that did not
+exist. It now re-plans Import (and Configure) for a GPO whose policy folder in SYSVOL is
+provably empty, so simply running Phase C again is the repair. The log names the GPO with
+`Re-import GPO (policy is empty)`.
+
+**A transient SYSVOL failure is retried.** `Import-GPO` clears the target policy folder before
+copying into it, and a run does 123 imports back to back, several from the same backup source.
+The retry logs `Transient failure - retrying` with `Attempt`, `DelayMs` and the `HResult`. If you
+see four attempts and then a failure, it is not a timing artefact — check Defender real-time
+protection on SYSVOL and `dfsrdiag ReplicationState`, then run Phase C again.
+
+**One failed configure still skips all GPO links.** `Deploy-TierModel.ps1` returns from the GPO
+deployment when any configure action fails, and phase 4 (linking) comes after phase 3. That
+fail-fast is deliberate and was left in place. The practical consequence: as long as `Errors` is
+not 0, assume no GPO is linked, and do not read anything into the OU structure looking complete.
+
+**Reading the counts.** `Applied` and `Errors` now count each result once. Before this branch a
+result that published both an `Errors` array and a `Failed` integer was counted twice, so two
+failed GPO actions printed `Errors: 4`.
+
+**Last resort, if a GPO is still not repaired.** The template GPOs
+(`*- Tier Model Template ...`) are never linked to an OU and affect no machine, so deleting one
+and letting the next run recreate it is free. Confirm it is unlinked first:
+
+```powershell
+(Get-GPOReport -Guid <guid> -ReportType Xml -Server $dc) -match '<LinksTo>'   # must be False
+Remove-GPO -Guid <guid> -Server $dc
+# If the SYSVOL folder survives - that is what ERROR_DIR_NOT_EMPTY is about - remove it too:
+Remove-Item "\\$dc\SYSVOL\<domain>\Policies\{<guid>}" -Recurse -Force
+```
+
+**If Phase C cannot be made to finish at all**, the optional features still run on their own,
+because the `-Include*` switches are also valid standalone (without any scope switch) and that
+path does not consult the standard deployment's error state:
+
+```powershell
+.\Deploy-TierModel.ps1 -PreferredDc $dc `
+    -IncludeMsa -IncludeGmsa -IncludeDmsa -IncludeWinLaps -IncludeAuthSilos -ConfirmApply -Logging
+```
+
+That is how to reach the Windows LAPS SELF evidence without a green Phase C. It is a fallback,
+not the goal.
+
 ---
 
 ## Phase D — Second run: idempotency
@@ -289,6 +338,12 @@ direct test for the Windows LAPS SELF defect this branch fixes — SELF detectio
 the ACE looked absent and the delegation was re-applied on every single run.
 
 Any non-zero action count in run 2 is a finding. Note which resource type it names.
+
+Since this branch the second run also carries a second meaning: the planner checks whether each
+GPO's policy folder in SYSVOL actually holds settings, so **zero actions now implies no GPO was
+left half-built**. A re-planned `ImportGPO` or `ConfigureGPO` here says the opposite — either a
+GPO really is empty, or the emptiness check is too eager and is re-importing a policy that is
+fine. Either way it is a finding, and the GPO it names is the one to look at in SYSVOL.
 
 ---
 

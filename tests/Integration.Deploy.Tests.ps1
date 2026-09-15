@@ -3512,3 +3512,59 @@ Describe 'Deploy-TierModel - Diagnostics never-prompt guarantee (D8 / FR-007)' {
         $consoleOutput | Should -Match "-OutputFileBase 'Deploy-TierModel'"
     }
 }
+
+Describe "Deploy-TierModel Consolidated Result Counting" -Tag "Integration", "Deploy", "Reporting" {
+
+    BeforeAll {
+        $script:DeployScriptPath = Join-Path $PSScriptRoot '..\Deploy-TierModel.ps1'
+        $script:DeployAst = [System.Management.Automation.Language.Parser]::ParseFile(
+            $script:DeployScriptPath, [ref]$null, [ref]$null)
+    }
+
+    # The GPO deployment result publishes BOTH an Errors array and a Failed integer for the same
+    # failures, and the consolidated summary used to add both: two failed GPO actions printed
+    # "Errors: 4" on the German lab run (2026-09-15). Applied/Executed overlap the same way.
+    # Asserted on the AST rather than by running a deployment, because this summary block only
+    # executes at the end of a full -ConfirmApply run against a live directory.
+
+    It "Counts each result's failures from exactly one source" {
+        $assignments = $script:DeployAst.FindAll({
+            param($node)
+            $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+            $node.Operator -eq 'PlusEquals' -and
+            $node.Left.Extent.Text -eq '$totalErrors'
+        }, $true)
+
+        @($assignments).Count | Should -Be 1 `
+            -Because 'a second += on $totalErrors would count the same failures twice, as Errors.Count + Failed did'
+    }
+
+    It "Counts each result's applied actions from exactly one source" {
+        $assignments = $script:DeployAst.FindAll({
+            param($node)
+            $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+            $node.Operator -eq 'PlusEquals' -and
+            $node.Left.Extent.Text -eq '$totalApplied'
+        }, $true)
+
+        @($assignments).Count | Should -Be 1 `
+            -Because 'Applied, Executed and Summary.Successful describe the same actions on results that publish more than one of them'
+    }
+
+    It "Still reads all three result shapes" {
+        # Anti-vacuity: the two assertions above would also pass if the counting were deleted
+        # outright. The fallback chain has to remain, because the result objects genuinely differ:
+        # integers on the execution results, arrays on the plan-shaped ones.
+        $errorAssignment = $script:DeployAst.FindAll({
+            param($node)
+            $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+            $node.Operator -eq 'PlusEquals' -and
+            $node.Left.Extent.Text -eq '$totalErrors'
+        }, $true) | Select-Object -First 1
+
+        $errorAssignment | Should -Not -BeNullOrEmpty
+        $errorAssignment.Right.Extent.Text | Should -Match "'Failed'"
+        $errorAssignment.Right.Extent.Text | Should -Match "'Errors'"
+        $errorAssignment.Right.Extent.Text | Should -Match "'Summary'"
+    }
+}

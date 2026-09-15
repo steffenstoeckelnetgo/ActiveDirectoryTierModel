@@ -115,6 +115,142 @@ if (Test-Path $PublicPath) {
 
 
 
+# HRESULTs that mean "SYSVOL is busy right now", not "this cannot work".
+#
+# Import-GPO clears the target policy folder under SYSVOL and copies the backup into it. Two
+# imports in quick succession - and a full deployment does 123 of them, several from the same
+# backup source - can catch the folder while the previous operation still holds handles on it.
+# Measured on a German lab domain 2026-09-15: one import failed 19 ms after the preceding one
+# from the same source completed, and the failed ConfigureGPO that followed then aborted GPO
+# phase 3, which returns before phase 4 - so none of the 131 planned GPO links were applied.
+#
+# Classification is by NUMERIC code and never by message text. The same failure prints "Das
+# Verzeichnis ist nicht leer." on a German host; matching on English text is precisely the class
+# of defect this module was reworked to remove (CLAUDE.md rule 2.5).
+#
+# ERROR_ACCESS_DENIED is in this list deliberately. It is ambiguous - it is also what a genuine
+# permission problem raises - but a half-cleared policy folder produces it too, and that is the
+# form the lab failure took on the SecEdit directory. A real permission problem simply fails four
+# times instead of once, costing 3.5 seconds and reporting the identical error.
+$script:TierModelTransientHResults = @(
+    0x80070005,  # ERROR_ACCESS_DENIED
+    0x80070020,  # ERROR_SHARING_VIOLATION
+    0x80070021,  # ERROR_LOCK_VIOLATION
+    0x80070091   # ERROR_DIR_NOT_EMPTY
+)
+
+function Test-TierModelTransientFailure {
+    <#
+    .SYNOPSIS
+    Decide whether an ErrorRecord describes a transient SYSVOL/file-system condition.
+
+    .DESCRIPTION
+    Walks the exception chain and compares each HResult against
+    $script:TierModelTransientHResults. The chain is walked because Import-GPO surfaces the
+    Win32 code on an inner COMException often enough that reading only the outer exception
+    would miss it.
+
+    No conversion is involved: PowerShell parses an 8-digit hex literal as a signed Int32, so
+    0x80070091 already evaluates to -2147024751 - the very value Exception.HResult carries.
+    (Masking to 32 unsigned bits, which looks like the obvious defensive move, turns the HResult
+    positive and makes every comparison fail silently. Verified 2026-09-15 on PowerShell 7.6.6.)
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory)]
+        [System.Management.Automation.ErrorRecord]$ErrorRecord
+    )
+
+    $ex = $ErrorRecord.Exception
+    while ($ex) {
+        if ($script:TierModelTransientHResults -contains $ex.HResult) { return $true }
+        $ex = $ex.InnerException
+    }
+    return $false
+}
+
+function Invoke-TierModelTransientRetry {
+    <#
+    .SYNOPSIS
+    Run a SYSVOL-touching operation, retrying only genuinely transient failures.
+
+    .DESCRIPTION
+    Retries with the exponential backoff already used for the post-create AD verifications in
+    New-TierModelOu.ps1 (500 ms doubling per attempt), so the module has one waiting idiom
+    rather than two.
+
+    This does NOT soften a fail-fast. Anything that is not classified as transient is rethrown
+    on the first attempt, and a transient failure that survives every attempt is rethrown too -
+    the caller's existing error path runs unchanged either way (CLAUDE.md rule 2.2).
+
+    WHY THIS LIVES INLINE IN THE .psm1
+    Same reason as Initialize-TierModelLogging above: tests\Unit.ModuleManifest.Tests.ps1
+    derives its expectation from the CONTENTS of the public\ folder, so an unexported helper
+    placed there breaks three assertions. Defined here it is dot-sourced into module scope,
+    unexported, and invisible to that test.
+
+    .PARAMETER ScriptBlock
+    The operation to run. Invoked with & so it keeps the caller's variables in scope.
+
+    .PARAMETER Operation
+    Short label for the log entry, e.g. 'Import-GPO'.
+
+    .PARAMETER Subject
+    What the operation acts on, e.g. the GPO name - carried into the log so a retry can be
+    traced back to one action.
+
+    .PARAMETER MaxAttempts
+    Total attempts including the first. Default 4: 0.5 s + 1 s + 2 s of waiting at worst.
+
+    .PARAMETER CorrelationId
+    Correlation id of the calling operation, carried into the retry log entry.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [scriptblock]$ScriptBlock,
+
+        [Parameter(Mandatory)]
+        [string]$Operation,
+
+        [string]$Subject,
+
+        [ValidateRange(1, 10)]
+        [int]$MaxAttempts = 4,
+
+        [string]$CorrelationId
+    )
+
+    $attempt = 0
+    while ($true) {
+        $attempt++
+        try {
+            return & $ScriptBlock
+        } catch {
+            if ($attempt -ge $MaxAttempts -or -not (Test-TierModelTransientFailure -ErrorRecord $_)) {
+                throw
+            }
+
+            $delayMs = [int](500 * [Math]::Pow(2, $attempt - 1))
+
+            Write-TierModelLog -Level Warning -Message "Transient failure - retrying" -Data @{
+                Operation     = $Operation
+                Subject       = $Subject
+                Attempt       = $attempt
+                MaxAttempts   = $MaxAttempts
+                DelayMs       = $delayMs
+                # Masked here only to print 0x80070091 rather than -2147024751.
+                HResult       = '0x{0:X8}' -f ($_.Exception.HResult -band 0xFFFFFFFFL)
+                Exception     = $_.Exception.Message
+                CorrelationId = $CorrelationId
+            } | Out-Null
+
+            Start-Sleep -Milliseconds $delayMs
+        }
+    }
+}
+
 Write-Verbose "TierModel module loaded with CorrelationId: $script:CorrelationId"
 
 function Get-TierModelConfigHash {

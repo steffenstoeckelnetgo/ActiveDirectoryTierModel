@@ -53,6 +53,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   parameter, working only through PowerShell's dynamic scoping from its one caller.
 - Timestamps are formatted with `InvariantCulture` so log and report filenames and JSON
   timestamps do not vary with the host's locale.
+- **GPO deployment survives a transient SYSVOL condition, and repairs a GPO it left
+  half-built.** Three defects that a German lab deployment exposed but that are not
+  language-specific and affect English deployments identically:
+  - `Import-GPO` clears the target policy folder in SYSVOL before copying into it, so
+    back-to-back imports — a full run does 123, several from the same backup source — can
+    meet a folder the previous import has not finished releasing. One import failed with
+    `ERROR_DIR_NOT_EMPTY` 19 ms after the preceding one from the same source completed.
+    The SYSVOL writes in `Import-TierModelGpo` and `Update-TierModelGPOConfig` now retry
+    transient file-system conditions with the exponential backoff already used for the
+    post-create AD verifications, classifying by HRESULT and never by message text (the
+    message is localized). A non-transient failure still throws on the first attempt and a
+    transient one that survives every attempt still fails the action — no fail-fast was
+    softened.
+  - `Get-TierModelGpo` planned Create/Import/Configure only for a GPO that did not exist
+    yet, so a GPO whose create succeeded and whose import failed was never repaired: the
+    next run saw it as existing, planned only its link, and the deployment reported
+    `Converged` over an empty policy. The planner now re-plans Import (and Configure) when
+    the GPO's policy folder in SYSVOL is provably empty. The check is deliberately
+    asymmetric — a folder that has not replicated to this host, or a SYSVOL that cannot be
+    read, changes nothing — because re-importing overwrites settings and must never act on
+    a state that could not be read.
+  - The consolidated deployment summary counted the same failures twice. The GPO result
+    publishes both an `Errors` array and a `Failed` integer for the same failures, and both
+    were added: two failed GPO actions printed `Errors: 4`. `Applied`/`Executed` had the
+    same shape. Each result is now counted from exactly one source.
 
 ### Changed
 - The two English-only prerequisite gates (host install language, well-known group names)

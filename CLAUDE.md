@@ -237,6 +237,49 @@ what the Linux harness could not:
   non-compliant. They now carry `'S-1-5-10'`. One of them additionally needed a domain SID in
   its `Get-ADDomain` mock, because Domain Admins is recognised by RID 512 and not by name.
 
+### Three GPO robustness fixes — from the lab deploy, not from localization
+
+The first German lab deployment (2026-09-15) applied 518 actions and failed on exactly one of
+123 GPO imports with `0x80070091 ERROR_DIR_NOT_EMPTY`, 19 ms after the preceding import **from
+the same backup source** finished. Nothing about it is language-specific; all three defects hit
+English deployments identically. Fixed here because the branch owner asked for it — the commit
+is written so it can be split out again for upstream.
+
+1. **No retry around the SYSVOL writes.** `Import-GPO` clears the target policy folder before
+   copying into it, and a run does 123 imports back to back. `Invoke-TierModelTransientRetry`
+   (module-scope, inline in `TierModel.psm1` for the reason documented at
+   `Initialize-TierModelLogging`) now wraps the `Import-GPO` call and the three SYSVOL writes in
+   `Update-TierModelGPOConfig`. Backoff is the one already used in `New-TierModelOu.ps1`.
+   Classification is by **HRESULT, never by message text** — the same failure reads *"Das
+   Verzeichnis ist nicht leer."* on a German host (rule 2.5). A non-transient error still throws
+   on the first attempt and an unrecoverable transient one still fails the action: **no
+   fail-fast was softened** (rule 2.2).
+   *Trap for the next reader:* PowerShell parses `0x80070091` as a **signed Int32**
+   (`-2147024751`), which is exactly what `Exception.HResult` carries. Masking it to 32 unsigned
+   bits — the obvious defensive move — makes every comparison fail silently.
+2. **A half-built GPO was never repaired.** `Get-TierModelGpo` emitted Create/Import/Configure
+   only inside `if (-not $existingGPO)`, so the GPO whose create succeeded and whose import
+   failed was seen as existing on the next run, got only its link planned, and the deployment
+   reported `Converged` over an empty policy — a direct breach of constitution principle III.
+   `Test-TierModelGpoPolicyPopulated` (unexported, inside `Get-TierModelGpo.ps1`) now reads the
+   policy folder in SYSVOL and the planner re-plans Import/Configure when it is provably empty.
+   The check is **deliberately asymmetric**: a folder that has not replicated to this host, or a
+   SYSVOL that cannot be read, changes nothing. Re-importing overwrites settings, so it must
+   never act on a state it could not read. That asymmetry is also what keeps the second run at
+   zero actions.
+   *Trap:* `Join-Path` resolves a path provider and throws on a UNC root where no drive can be
+   derived (on Linux), which sent every probe into its catch and silently disabled the feature.
+   UNC paths are composed as plain strings.
+3. **`Errors:` and `Applied:` were double-counted.** The GPO result publishes both an `Errors`
+   array and a `Failed` integer for the same failures and the summary added both — two failed
+   actions printed `Errors: 4`. Each result is now counted from exactly one source. The
+   standalone `-Include*` aggregation already did this correctly and was left alone.
+
+**Not changed, on purpose:** `Deploy-TierModel.ps1:1694` returns from the GPO deployment when
+*any* configure action fails — which is why that single failure also skipped all **131** planned
+GPO links. Turning it into a warn-and-continue is exactly what rule 2.2 forbids without design
+sign-off. With the retry and the re-plan in place it stops being the practical problem.
+
 **The SID-composition core is verified.** `tests/Unit.CanonicalPrincipal.Tests.ps1` ran
 **59 of 59 green on a German Windows host against a German directory** — the 22 tests that
 cannot even execute on Linux are precisely the ones that carry this proof. What remains
@@ -296,8 +339,24 @@ Ordered. Items 1–3 are the actual acceptance gate.
    phase D): every principal in the real config must resolve by a defined path; English and
    German fixtures must produce **identical SID sets**, both at the resolver and in the generated
    `[Privilege Rights]`.
-6. **German lab acceptance.** No mock replaces this: deploy → second deploy (idempotency, which
-   is exactly the LAPS SELF bug) → audit reporting zero drift → verify the Deny ACE on the GPC
+6. **German lab acceptance.** Phases A–C are done; D–F are open.
+
+   **Phase B (plan) passed** on `int.promiseIT.de`: prerequisites validated, 718 actions, no
+   `RequiredGroupNotFound` — the two blockers the old code stopped at are gone. The canary
+   groups read `Domänen-Admins` / `Server-Operatoren` / `Konten-Operatoren`, so this is a
+   genuinely localized directory and everything measured on it counts.
+
+   **Phase C (deploy) applied 518 of the planned actions**, including **105 OU ACLs with zero
+   failures**, each logged with the SID it resolved to — the first live evidence that the
+   `NTAccount(...).Translate()` ACL paths work against a German directory. It then failed on
+   1 of 123 GPO imports and reported `Errors: 4 / Converged: False`. All three causes were
+   product defects unrelated to language and are fixed in this branch (§5): the run is to be
+   repeated on the fixed code, which is itself the acceptance test for those fixes. 518 is
+   exactly `31 + 29 + 3 + 105 + 146 + 122 + 22 + 60` — no GPO link was applied, because the
+   configure failure returns before phase 4.
+
+   Still ahead, and no mock replaces any of it: second deploy (idempotency, which is exactly the
+   LAPS SELF bug) → audit reporting zero drift → verify the Deny ACE on the GPC
    against `Domänencontroller`. Use `tests/Manual.Integration.Tests.xlsx`, and run
    `optional/Test-TierModelLocalizedDeployment.ps1 -PreferredDc <dc> -IncludeWinLaps -IncludeAuthSilos -IncludeAudit`.
    That script is read-only and writes one JSON report covering what the product audit does not:
@@ -313,10 +372,12 @@ Ordered. Items 1–3 are the actual acceptance gate.
 
 ### Open questions that must not be answered by assumption
 
-- **Is the `Domain Controllers` OU localized on a German domain?** Unknown. Not assumed either
-  way: `Resolve-TierModelDelegationOuDn` uses the configured DN when it resolves and falls back
-  to the `wellKnownObject`-backed `DomainControllersContainer` when it does not. Confirm on the
-  German lab and simplify if the answer makes it unnecessary.
+- ~~**Is the `Domain Controllers` OU localized on a German domain?**~~ **Answered, measured.**
+  On `int.promiseIT.de` (German Windows, German directory) `Get-ADDomain` reports
+  `DomainControllersContainer = OU=Domain Controllers,DC=int,DC=promiseIT,DC=de` — the OU keeps
+  its English name. One domain is not every domain, so the fallback in
+  `Resolve-TierModelDelegationOuDn` stays; it simply never fires here. Removing it needs a
+  second localized domain to confirm against, not this one measurement.
 - **Does `Import-GPO` carry the source lab's `<SecurityGroups>` names into the imported GPO?**
   `config/gpo/**/Backup.xml` contains the source domain's `Domain Admins` / `Enterprise Admins`
   with their original SIDs. Expected to be inert because `Import-GPO` imports settings rather

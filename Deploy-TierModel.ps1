@@ -2777,30 +2777,34 @@ if ($FullDeployment) {
         
         foreach ($result in $allResults) {
             if ($result) {
-                # Handle different result object structures
-                if ($result.PSObject.Properties.Name -contains 'Applied' -and $result.Applied) {
-                    $totalApplied += @($result.Applied).Count
-                }
-                if ($result.PSObject.Properties.Name -contains 'Executed' -and $result.Executed) {
-                    $totalApplied += $result.Executed
-                }
-                if ($result.PSObject.Properties.Name -contains 'Summary' -and $result.Summary -and $result.Summary.PSObject.Properties.Name -contains 'Successful') {
-                    $totalApplied += $result.Summary.Successful
-                }
+                # Handle different result object structures - EXACTLY ONE source per result.
+                #
+                # These shapes overlap. Invoke-GpoDeployment returns both an Errors array and a
+                # Failed integer describing the SAME failures, so counting both reported
+                # "Errors: 4" for two failed GPO actions on the German lab run (2026-09-15), and
+                # Applied/Executed can overlap the same way. The integer is authoritative where a
+                # result publishes one; the array is the fallback for results that do not.
+                # (The standalone -Include* aggregation further down already reads a single
+                # source per result and needs no equivalent change.)
+                $totalApplied += if ($result.PSObject.Properties.Name -contains 'Executed' -and $result.Executed) {
+                    [int]$result.Executed
+                } elseif ($result.PSObject.Properties.Name -contains 'Applied' -and $result.Applied) {
+                    @($result.Applied).Count
+                } elseif ($result.PSObject.Properties.Name -contains 'Summary' -and $result.Summary -and $result.Summary.PSObject.Properties.Name -contains 'Successful') {
+                    [int]$result.Summary.Successful
+                } else { 0 }
                 
                 if ($result.PSObject.Properties.Name -contains 'Skipped' -and $result.Skipped) {
                     $totalSkipped += if ($result.Skipped -is [int]) { $result.Skipped } else { @($result.Skipped).Count }
                 }
                 
-                if ($result.PSObject.Properties.Name -contains 'Errors' -and $result.Errors) {
-                    $totalErrors += @($result.Errors).Count
-                }
-                if ($result.PSObject.Properties.Name -contains 'Failed' -and $result.Failed) {
-                    $totalErrors += $result.Failed
-                }
-                if ($result.PSObject.Properties.Name -contains 'Summary' -and $result.Summary -and $result.Summary.PSObject.Properties.Name -contains 'Failed') {
-                    $totalErrors += $result.Summary.Failed
-                }
+                $totalErrors += if ($result.PSObject.Properties.Name -contains 'Failed' -and $result.Failed) {
+                    [int]$result.Failed
+                } elseif ($result.PSObject.Properties.Name -contains 'Errors' -and $result.Errors) {
+                    @($result.Errors).Count
+                } elseif ($result.PSObject.Properties.Name -contains 'Summary' -and $result.Summary -and $result.Summary.PSObject.Properties.Name -contains 'Failed') {
+                    [int]$result.Summary.Failed
+                } else { 0 }
                 
                 if ($result.PSObject.Properties.Name -contains 'DurationMs' -and $result.DurationMs) {
                     $totalDuration += $result.DurationMs
