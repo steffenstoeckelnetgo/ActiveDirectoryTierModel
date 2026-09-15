@@ -145,9 +145,61 @@ function Resolve-TierModelPrincipalSid {
             }
         }
         
+        # --- Canonical well-known principal resolution (language- and rename-independent) ---
+        # Built-in Active Directory principals are LOCALISED once, at domain creation, from the
+        # install language of the first domain controller, and then replicated. A German domain
+        # serves "Domaenen-Admins", never "Domain Admins", so Get-ADGroup -Identity 'Domain Admins'
+        # returns nothing there. The same lookup also fails wherever an administrator has renamed
+        # a built-in group. Their SIDs, however, are fixed: a well-known RID under the domain (or
+        # forest-root) SID.
+        #
+        # So the English names in config/*.json are treated as CANONICAL IDENTIFIERS, not as
+        # directory names: map the name to its RID, compose the SID from the domain this run
+        # targets, and confirm THAT object exists. This is the same reasoning the Administrator
+        # (RID 500) path above already applies, generalised to every built-in principal the Tier
+        # Model references. See specs/008-german-language-support/spec.md.
+        $canonical = Get-TierModelCanonicalPrincipal -Principal $Principal
+        if ($canonical) {
+            $canonicalResult = Resolve-TierModelCanonicalSid -Canonical $canonical -Principal $Principal -DomainController $DomainController -CorrelationId $CorrelationId
+
+            if ($canonicalResult.Success) {
+                Write-Verbose "Resolved canonical SID for '$Principal': $($canonicalResult.Sid) (directory name: '$($canonicalResult.ActualName)') (CorrelationId: $CorrelationId)"
+
+                if ($UseCache) {
+                    $script:SidCache[$Principal] = @{
+                        Sid = $canonicalResult.Sid
+                        Source = $canonicalResult.Source
+                        Success = $true
+                        Error = $null
+                    }
+                }
+
+                $canonicalObj = [PSCustomObject]@{
+                    Principal = $Principal
+                    Sid = $canonicalResult.Sid
+                    Source = $canonicalResult.Source
+                    Cached = $false
+                    Success = $true
+                    Error = $null
+                }
+                if ($canonicalResult.ActualName) {
+                    $canonicalObj | Add-Member -NotePropertyName 'ActualName' -NotePropertyValue $canonicalResult.ActualName -Force
+                }
+                return $canonicalObj
+            }
+
+            # The principal is a known built-in, but this domain does not have it: a
+            # forestRootOnly group seen from a child domain, or an optional group that was never
+            # created (e.g. Allowed RODC Password Replication Group). Fall through to the existing
+            # paths so the caller gets exactly the "not found" outcome it got before this change -
+            # callers such as New-TierModelGptTmplContent rely on that to SKIP the principal
+            # rather than write an unresolvable SID into [Privilege Rights].
+            Write-Verbose "Canonical principal '$Principal' is not present in this domain: $($canonicalResult.Error) (CorrelationId: $CorrelationId)"
+        }
+
         # Try AD resolution
         try {
-            $adResult = Resolve-ADPrincipalSid -Principal $Principal -CorrelationId $CorrelationId
+            $adResult = Resolve-ADPrincipalSid -Principal $Principal -DomainController $DomainController -CorrelationId $CorrelationId
             
             if ($adResult.Success) {
                 Write-Verbose "Resolved AD SID for '$Principal': $($adResult.Sid) (CorrelationId: $CorrelationId)"
@@ -317,6 +369,415 @@ function ConvertTo-TierModelSidString {
     return $candidate
 }
 
+function ConvertTo-TierModelIdentitySid {
+    <#
+    .SYNOPSIS
+    Normalises any identity shape (IdentityReference, NTAccount, SID string, "DOMAIN\Name") to a
+    SID string.
+
+    .DESCRIPTION
+    Private helper (not exported). Security descriptors and the LAPS cmdlets hand identities back
+    as display names that the LOCAL machine translated: on German Windows the same ACE reads
+    "NT-AUTORITAET\SELBST", "VORDEFINIERT\Administratoren" or "<DOM>\Domaenen-Admins" instead of
+    "NT AUTHORITY\SELF", "BUILTIN\Administrators" or "<DOM>\Domain Admins". Comparing those
+    strings to English literals silently fails on every non-English host - the Tier Model then
+    misses its own SELF ACE (re-applying the delegation on every run) and reports every legitimate
+    administrative holder as drift.
+
+    Translating back to a SID removes the language from the comparison entirely.
+
+    Returns $null when the identity cannot be translated (an orphaned SID from a deleted trust, a
+    principal from an unreachable domain). Callers must treat $null as "unknown", never as a match.
+
+    .PARAMETER Identity
+    The identity to normalise.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [AllowNull()]
+        [AllowEmptyString()]
+        $Identity
+    )
+
+    if ($null -eq $Identity) { return $null }
+
+    if ($Identity -is [System.Security.Principal.SecurityIdentifier]) {
+        return $Identity.Value
+    }
+
+    $text = if ($Identity -is [System.Security.Principal.NTAccount]) {
+        $Identity.Value
+    }
+    elseif ($Identity -is [string]) {
+        $Identity
+    }
+    else {
+        # IdentityReference and deserialized wrappers expose .Value; fall back to ToString().
+        $valueProperty = $Identity.PSObject.Properties['Value']
+        if ($valueProperty) { [string]$valueProperty.Value } else { [string]$Identity }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($text)) { return $null }
+    $text = $text.Trim()
+
+    # Already a SID.
+    if ($text -match '^S-1-\d+(-\d+)+$') { return $text }
+
+    try {
+        return ([System.Security.Principal.NTAccount]::new($text)).Translate([System.Security.Principal.SecurityIdentifier]).Value
+    }
+    catch {
+        return $null
+    }
+}
+
+function Test-TierModelIdentityMatch {
+    <#
+    .SYNOPSIS
+    Compares two identities by SID, falling back to a name comparison only when a SID cannot be
+    obtained for both.
+
+    .DESCRIPTION
+    Private helper (not exported). Either side may be an IdentityReference, an NTAccount, a SID
+    string or "DOMAIN\Name". When both translate to a SID the comparison is by SID and is
+    language- and rename-independent.
+
+    The name fallback matters for principals that no longer exist (an ACE left behind by a deleted
+    group translates to nothing), where a string comparison is all that is available. It compares
+    the full value and the sAMAccountName portion, which is what the previous code did.
+
+    .PARAMETER Left
+    First identity.
+
+    .PARAMETER Right
+    Second identity.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [AllowNull()]
+        [AllowEmptyString()]
+        $Left,
+
+        [Parameter(Mandatory)]
+        [AllowNull()]
+        [AllowEmptyString()]
+        $Right
+    )
+
+    $leftSid  = ConvertTo-TierModelIdentitySid -Identity $Left
+    $rightSid = ConvertTo-TierModelIdentitySid -Identity $Right
+
+    if ($leftSid -and $rightSid) {
+        return ($leftSid -eq $rightSid)
+    }
+
+    $leftText  = [string]$(if ($Left  -and $Left.PSObject.Properties['Value'])  { $Left.Value }  else { $Left })
+    $rightText = [string]$(if ($Right -and $Right.PSObject.Properties['Value']) { $Right.Value } else { $Right })
+
+    if ([string]::IsNullOrWhiteSpace($leftText) -or [string]::IsNullOrWhiteSpace($rightText)) { return $false }
+
+    if ($leftText -ieq $rightText) { return $true }
+
+    return ((($leftText -split '\\')[-1]) -ieq (($rightText -split '\\')[-1]))
+}
+
+function Resolve-TierModelLapsPrincipal {
+    <#
+    .SYNOPSIS
+    Resolves configured Windows LAPS delegation group names to SID + sAMAccountName.
+
+    .DESCRIPTION
+    Private helper (not exported). Shared by the LAPS planner (Get-TierModelWinLapsAcl) and the
+    LAPS audit (Test-TierModelWinLapsAcl) so both agree on what a configured group resolves to.
+
+    Both used to resolve with Get-ADGroup -Filter "Name -eq '<config name>'". That breaks on a
+    localised directory in a particularly quiet way: config/tiermodel-winlaps.json names
+    'Domain Admins' for the domain controller delegation, a German domain calls that group
+    'Domaenen-Admins', and a -Filter that matches nothing returns an EMPTY RESULT rather than
+    throwing. The planner then recorded RequiredGroupNotFound and blocked the whole LAPS
+    deployment, while the audit silently checked an empty principal list and called the delegation
+    compliant.
+
+    Resolving through Resolve-TierModelPrincipalSid puts built-ins on the canonical SID path, then
+    reads the object back BY SID for the sAMAccountName the directory actually uses. Groups the
+    Tier Model owns (Tier 0 Server Operators, ...) are unaffected - they keep taking the name path.
+
+    .PARAMETER GroupNames
+    Group names as written in the configuration.
+
+    .PARAMETER DomainController
+    Domain controller every directory read in this run targets.
+
+    .PARAMETER NetBiosDomain
+    NetBIOS domain name used to build the "NETBIOS\sAMAccountName" form. Looked up when omitted.
+
+    .OUTPUTS
+    [PSCustomObject] per group: Config, Sid, Sam, Qualified, Found.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
+        [string[]]$GroupNames,
+
+        [Parameter(Mandatory)]
+        [string]$DomainController,
+
+        [string]$NetBiosDomain
+    )
+
+    if (-not $PSBoundParameters.ContainsKey('NetBiosDomain') -or [string]::IsNullOrWhiteSpace($NetBiosDomain)) {
+        try {
+            $NetBiosDomain = (Get-ADDomain -Server $DomainController -ErrorAction Stop).NetBIOSName
+        }
+        catch {
+            $NetBiosDomain = $null
+        }
+    }
+
+    foreach ($groupName in $GroupNames) {
+        if ([string]::IsNullOrWhiteSpace($groupName)) { continue }
+
+        $resolvedSid = $null
+        $resolvedSam = $null
+
+        $sidResult = Resolve-TierModelPrincipalSid -Principal $groupName -DomainController $DomainController -WarningAction SilentlyContinue
+        if ($sidResult -and $sidResult.Success -and -not [string]::IsNullOrWhiteSpace($sidResult.Sid)) {
+            $resolvedSid = $sidResult.Sid
+            try {
+                $adGroup = Get-ADGroup -Identity $resolvedSid -Server $DomainController -Properties sAMAccountName -ErrorAction Stop
+                if ($adGroup) { $resolvedSam = $adGroup.sAMAccountName }
+            }
+            catch {
+                # SID is valid but the object is not readable as a group (an alias-only well-known
+                # SID such as BUILTIN\Administrators has no directory object). The SID still
+                # identifies it; fall back to the configured name for display.
+                $resolvedSam = $null
+            }
+        }
+
+        if (-not $resolvedSam) {
+            # No SID, or no readable group object: keep the previous name-based lookup so nothing
+            # that worked before stops working.
+            try {
+                $escapedName = $groupName -replace "'", "''"
+                $adGroupByName = Get-ADGroup -Filter "Name -eq '$escapedName'" -Server $DomainController -Properties sAMAccountName -ErrorAction Stop
+                if ($adGroupByName) {
+                    $resolvedSam = $adGroupByName.sAMAccountName
+                    if (-not $resolvedSid) {
+                        $resolvedSid = ConvertTo-TierModelSidString -InputSid $adGroupByName.SID -Context "group '$groupName'"
+                    }
+                }
+            }
+            catch {
+                $resolvedSam = $null
+            }
+        }
+
+        $found = [bool]($resolvedSid -or $resolvedSam)
+        $samForDisplay = if ($resolvedSam) { $resolvedSam } else { $groupName }
+
+        [PSCustomObject]@{
+            Config    = $groupName
+            Sid       = $resolvedSid
+            Sam       = $samForDisplay
+            Qualified = if ($NetBiosDomain -and $resolvedSam) { "$NetBiosDomain\$resolvedSam" } else { $null }
+            Found     = $found
+        }
+    }
+}
+
+function Get-TierModelCanonicalPrincipal {
+    <#
+    .SYNOPSIS
+    Maps a canonical (English) built-in principal name to its well-known RID.
+
+    .DESCRIPTION
+    Private helper (not exported). The configuration set names built-in Active Directory
+    principals in English. Those NAMES are localised per domain and can be renamed; their RIDs
+    are not. This table is the mapping from the canonical name the configuration uses to the
+    RID that identifies the principal in any domain, in any language.
+
+    Only principals whose SID must be COMPOSED from a domain SID belong here. Built-ins with an
+    absolute, domain-independent SID (BUILTIN\Administrators = S-1-5-32-544, NT AUTHORITY\SELF =
+    S-1-5-10, ...) are served by Get-WellKnownSid, which needs no directory round trip at all.
+
+    Scope values (both compose against the SID of the domain being deployed to - see
+    Resolve-TierModelCanonicalSid for why that is correct for ForestRoot too):
+      Domain     - RID is allocated in every domain.
+      ForestRoot - RID is allocated ONLY in the forest root domain, so these principals
+                   legitimately do not resolve when deploying into a child domain.
+
+    Administrator (RID 500) is deliberately absent: Resolve-TierModelPrincipalSid handles it
+    earlier with its own cache-bypassing path, which must keep running first.
+
+    .PARAMETER Principal
+    The principal name as written in the configuration.
+
+    .OUTPUTS
+    [hashtable] @{ Scope; Rid; ObjectClass; CanonicalName } or $null when not a known built-in.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Principal
+    )
+
+    # Canonical name -> @{ Scope; Rid; ObjectClass }
+    $canonicalPrincipals = @{
+        # --- Domain-relative groups (RID under <domainSID>) ---
+        'Domain Admins'                            = @{ Scope = 'Domain';     Rid = 512; ObjectClass = 'group' }
+        'Domain Users'                             = @{ Scope = 'Domain';     Rid = 513; ObjectClass = 'group' }
+        'Domain Guests'                            = @{ Scope = 'Domain';     Rid = 514; ObjectClass = 'group' }
+        'Domain Computers'                         = @{ Scope = 'Domain';     Rid = 515; ObjectClass = 'group' }
+        'Domain Controllers'                       = @{ Scope = 'Domain';     Rid = 516; ObjectClass = 'group' }
+        'Cert Publishers'                          = @{ Scope = 'Domain';     Rid = 517; ObjectClass = 'group' }
+        'Group Policy Creator Owners'              = @{ Scope = 'Domain';     Rid = 520; ObjectClass = 'group' }
+        'Read-only Domain Controllers'             = @{ Scope = 'Domain';     Rid = 521; ObjectClass = 'group' }
+        'Cloneable Domain Controllers'             = @{ Scope = 'Domain';     Rid = 522; ObjectClass = 'group' }
+        'Protected Users'                          = @{ Scope = 'Domain';     Rid = 525; ObjectClass = 'group' }
+        'Key Admins'                               = @{ Scope = 'Domain';     Rid = 526; ObjectClass = 'group' }
+        'Allowed RODC Password Replication Group'  = @{ Scope = 'Domain';     Rid = 571; ObjectClass = 'group' }
+        'Denied RODC Password Replication Group'   = @{ Scope = 'Domain';     Rid = 572; ObjectClass = 'group' }
+
+        # --- Domain-relative users ---
+        'Guest'                                    = @{ Scope = 'Domain';     Rid = 501; ObjectClass = 'user'  }
+
+        # --- Forest-root-relative groups (RID under <forestRootDomainSID>) ---
+        'Enterprise Admins'                        = @{ Scope = 'ForestRoot'; Rid = 519; ObjectClass = 'group' }
+        'Schema Admins'                            = @{ Scope = 'ForestRoot'; Rid = 518; ObjectClass = 'group' }
+        'Enterprise Key Admins'                    = @{ Scope = 'ForestRoot'; Rid = 527; ObjectClass = 'group' }
+        'Enterprise Read-only Domain Controllers'  = @{ Scope = 'ForestRoot'; Rid = 498; ObjectClass = 'group' }
+    }
+
+    # Exact match first, then case-insensitive - mirrors Get-WellKnownSid's contract.
+    if ($canonicalPrincipals.ContainsKey($Principal)) {
+        $entry = $canonicalPrincipals[$Principal]
+        return @{ Scope = $entry.Scope; Rid = $entry.Rid; ObjectClass = $entry.ObjectClass; CanonicalName = $Principal }
+    }
+
+    $matchingKey = $canonicalPrincipals.Keys | Where-Object { $_ -ieq $Principal } | Select-Object -First 1
+    if ($matchingKey) {
+        $entry = $canonicalPrincipals[$matchingKey]
+        return @{ Scope = $entry.Scope; Rid = $entry.Rid; ObjectClass = $entry.ObjectClass; CanonicalName = $matchingKey }
+    }
+
+    return $null
+}
+
+function Resolve-TierModelCanonicalSid {
+    <#
+    .SYNOPSIS
+    Composes and VERIFIES the SID of a canonical built-in principal in the target domain.
+
+    .DESCRIPTION
+    Private helper (not exported). Takes the Get-TierModelCanonicalPrincipal entry, composes
+    <domainSID>-<RID> against the domain this run targets, and then reads the object back BY SID.
+
+    The read-back is not a sanity check, it is load-bearing. Two cases must keep resolving to
+    "not found", exactly as the previous name-based lookup did:
+
+      - forestRootOnly groups (Enterprise/Schema Admins) when deploying into a CHILD domain;
+      - optional groups that a given domain never created (Allowed RODC Password Replication
+        Group, Protected Users on an old DFL).
+
+    Composing a SID without verifying it would silently write an unresolvable SID into GPO
+    [Privilege Rights], which is a security-configuration failure rather than a missing entry.
+
+    The verified object's directory Name is returned as ActualName, so a run against a German
+    domain logs "Domain Admins -> S-1-5-21-...-512 (Domaenen-Admins)".
+
+    .PARAMETER Canonical
+    Entry returned by Get-TierModelCanonicalPrincipal.
+
+    .PARAMETER Principal
+    The original principal string, for messages.
+
+    .PARAMETER DomainController
+    Domain controller every directory read in this run targets.
+
+    .PARAMETER CorrelationId
+    Tracking ID for logging correlation.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [hashtable]$Canonical,
+
+        [Parameter(Mandatory)]
+        [string]$Principal,
+
+        [Parameter(Mandatory)]
+        [string]$DomainController,
+
+        [string]$CorrelationId = [System.Guid]::NewGuid().ToString()
+    )
+
+    # Defensive init: the module-scope cache is created when this file is dot-sourced, but
+    # Set-StrictMode -Version Latest makes reading an undefined $script: variable throw, and test
+    # harnesses can reset module state between contexts.
+    if (-not $script:CanonicalDomainSidCache) { $script:CanonicalDomainSidCache = @{} }
+
+    # Every canonical RID is composed against the SID of the domain this run targets - including
+    # the ForestRoot-scope ones. That is not an approximation, it is what makes child domains
+    # behave as before:
+    #
+    #   - In the FOREST ROOT domain, RID 519 under the domain SID IS Enterprise Admins.
+    #   - In a CHILD domain, RID 519 is simply not allocated, so the read-back below finds
+    #     nothing and the principal is reported as not found - exactly what
+    #     Get-ADGroup -Identity 'Enterprise Admins' -Server <childDC> did before this change.
+    #
+    # Preserving that parity is deliberate. Resolving forest-root groups cross-domain would ADD
+    # principals to GPO user-rights lists in child domains; that is a security-policy change and
+    # belongs in its own reviewed decision, not in a localisation fix.
+    #
+    # Memoised per domain controller: a deployment resolves hundreds of principals and must not
+    # issue hundreds of Get-ADDomain round trips.
+    try {
+        if (-not $script:CanonicalDomainSidCache.ContainsKey($DomainController)) {
+            $adDomain = Get-ADDomain -Server $DomainController -ErrorAction Stop
+            $script:CanonicalDomainSidCache[$DomainController] = ConvertTo-TierModelSidString -InputSid $adDomain.DomainSID -Context "the domain SID of '$DomainController'"
+        }
+        $baseSid = $script:CanonicalDomainSidCache[$DomainController]
+    }
+    catch {
+        return @{ Sid = $null; Source = 'CanonicalError'; Success = $false; Error = "Could not resolve the domain SID for '$Principal' from '$DomainController': $($_.Exception.Message)"; ActualName = $null }
+    }
+
+    $composedSid = "$baseSid-$($Canonical.Rid)"
+
+    # Read the object back BY SID. A failure here means the principal does not exist in this
+    # domain, which is a legitimate outcome - see the .DESCRIPTION.
+    try {
+        $adObject = if ($Canonical.ObjectClass -eq 'user') {
+            Get-ADUser -Identity $composedSid -Server $DomainController -ErrorAction Stop
+        } else {
+            Get-ADGroup -Identity $composedSid -Server $DomainController -ErrorAction Stop
+        }
+    }
+    catch {
+        return @{ Sid = $null; Source = 'CanonicalNotFound'; Success = $false; Error = "Canonical principal '$Principal' (RID $($Canonical.Rid), scope $($Canonical.Scope)) does not exist in the domain served by '$DomainController': $($_.Exception.Message)"; ActualName = $null }
+    }
+
+    if (-not $adObject) {
+        return @{ Sid = $null; Source = 'CanonicalNotFound'; Success = $false; Error = "Canonical principal '$Principal' (RID $($Canonical.Rid), scope $($Canonical.Scope)) was not found in the domain served by '$DomainController'"; ActualName = $null }
+    }
+
+    # Normalise from the returned object rather than trusting the composed string, so the SID
+    # written into security policy is always one the directory itself handed back.
+    $verifiedSid = ConvertTo-TierModelSidString -InputSid $adObject.SID -Context "canonical principal '$Principal' (RID $($Canonical.Rid))"
+
+    return @{
+        Sid = $verifiedSid
+        Source = "Canonical$($Canonical.Scope)Rid"
+        Success = $true
+        Error = $null
+        ActualName = $adObject.Name
+    }
+}
+
 function Get-WellKnownSid {
     <#
     .SYNOPSIS
@@ -350,6 +811,10 @@ function Get-WellKnownSid {
         "BUILTIN\Distributed COM Users" = "S-1-5-32-562"
         "BUILTIN\IIS_IUSRS" = "S-1-5-32-568"
         "BUILTIN\Event Log Readers" = "S-1-5-32-573"
+        "BUILTIN\Cryptographic Operators" = "S-1-5-32-569"
+        "BUILTIN\Remote Desktop Users" = "S-1-5-32-555"
+        "BUILTIN\Certificate Service DCOM Access" = "S-1-5-32-574"
+        "BUILTIN\Remote Management Users" = "S-1-5-32-580"
         
         # NT Authority
         "NT AUTHORITY\SYSTEM" = "S-1-5-18"
@@ -372,15 +837,39 @@ function Get-WellKnownSid {
         "CREATOR OWNER" = "S-1-3-0"
         "CREATOR GROUP" = "S-1-3-1"
         
-        # Short names (case-insensitive lookups)
+        # Short names (case-insensitive lookups).
+        # These are the BUILTIN aliases as they appear WITHOUT the "BUILTIN\" prefix in
+        # config/tiermodel-gpos.json. Their SIDs are fixed in every Windows language, so
+        # resolving them here keeps a localised (e.g. German) domain off the name-lookup
+        # path entirely - see specs/008-german-language-support/spec.md.
         "Administrators" = "S-1-5-32-544"
         "Users" = "S-1-5-32-545"
         "Guests" = "S-1-5-32-546"
+        "Power Users" = "S-1-5-32-547"
+        "Account Operators" = "S-1-5-32-548"
+        "Server Operators" = "S-1-5-32-549"
+        "Print Operators" = "S-1-5-32-550"
+        "Backup Operators" = "S-1-5-32-551"
+        "Replicator" = "S-1-5-32-552"
+        "Remote Desktop Users" = "S-1-5-32-555"
+        "Network Configuration Operators" = "S-1-5-32-556"
+        "Performance Monitor Users" = "S-1-5-32-558"
+        "Performance Log Users" = "S-1-5-32-559"
+        "Distributed COM Users" = "S-1-5-32-562"
+        "IIS_IUSRS" = "S-1-5-32-568"
+        "Cryptographic Operators" = "S-1-5-32-569"
+        "Event Log Readers" = "S-1-5-32-573"
+        "Certificate Service DCOM Access" = "S-1-5-32-574"
+        "Remote Management Users" = "S-1-5-32-580"
         "SYSTEM" = "S-1-5-18"
         "Authenticated Users" = "S-1-5-11"
         "ANONYMOUS LOGON" = "S-1-5-7"
         "Local account" = "S-1-5-113"
         "IUSR" = "S-1-5-17"
+        "SELF" = "S-1-5-10"
+        "NT AUTHORITY\SELF" = "S-1-5-10"
+        "Enterprise Domain Controllers" = "S-1-5-9"
+        "NT AUTHORITY\ENTERPRISE DOMAIN CONTROLLERS" = "S-1-5-9"
     }
     
     # Try exact match first
@@ -410,7 +899,13 @@ function Resolve-ADPrincipalSid {
     param(
         [Parameter(Mandatory)]
         [string]$Principal,
-        
+
+        # Declared explicitly. The body has always used -Server $DomainController; until now
+        # that value only reached here through PowerShell's dynamic scoping from the caller
+        # Resolve-TierModelPrincipalSid, which binds to $null for any other caller.
+        [Parameter(Mandatory)]
+        [string]$DomainController,
+
         [string]$CorrelationId
     )
     
@@ -566,3 +1061,8 @@ function Get-TierModelConditionalGroupNames {
 
 # Initialize module-level SID cache
 $script:SidCache = @{}
+
+# Memoised domain SID for canonical (RID-relative) principal resolution, keyed by domain
+# controller. A deployment resolves hundreds of principals; without this each one would cost a
+# Get-ADDomain round trip.
+$script:CanonicalDomainSidCache = @{}

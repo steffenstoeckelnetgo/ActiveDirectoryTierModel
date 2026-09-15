@@ -84,13 +84,32 @@ function Test-TierModelWinLapsAcl {
 
         # Resolve NetBIOS domain name for principal matching
         $netBIOSDomain = $null
+        $domainSidValue = $null
         try {
             $adDomain = Get-ADDomain -Server $DomainController -ErrorAction Stop
             $netBIOSDomain = $adDomain.NetBIOSName
+            $domainSidValue = ConvertTo-TierModelSidString -InputSid $adDomain.DomainSID -Context "the domain SID of '$DomainController'"
         } catch {
             Write-TierModelLog -Level Warning -Message "Cannot resolve NetBIOS domain name" -Data @{
                 Exception = $_.Exception.Message; CorrelationId = $CorrelationId
             } | Out-Null
+        }
+
+        # SIDs of the principals that legitimately hold LAPS read/reset rights and must not be
+        # reported as drift. Built as SIDs, not names: Find-LapsADExtendedRights returns holders as
+        # strings the LOCAL machine translated, so on German Windows the same principals read
+        # 'NT-AUTORITAET\SELBST', 'VORDEFINIERT\Administratoren' and '<DOM>\Domaenen-Admins'.
+        # Comparing those to English literals flagged every legitimate holder as drift.
+        # RID 519 (Enterprise Admins) exists only in the forest root; in a child domain the composed
+        # SID simply matches nothing, which is the correct outcome.
+        $expectedAdminHolderSids = @(
+            'S-1-5-10'      # NT AUTHORITY\SELF
+            'S-1-5-18'      # NT AUTHORITY\SYSTEM
+            'S-1-5-32-544'  # BUILTIN\Administrators
+        )
+        if ($domainSidValue) {
+            $expectedAdminHolderSids += "$domainSidValue-512"  # Domain Admins
+            $expectedAdminHolderSids += "$domainSidValue-519"  # Enterprise Admins (forest root only)
         }
 
         # Pre-compute LAPS attribute schema GUIDs for SELF ACE detection (mirrors Get-TierModelWinLapsAcl planner).
@@ -116,6 +135,22 @@ function Test-TierModelWinLapsAcl {
             }
         } catch { }
 
+        # Matches a LAPS rights holder (a display string from Find-LapsADExtendedRights) against a
+        # configured principal. Prefers the SID so the comparison survives a localised host and a
+        # renamed group; falls back to the sAMAccountName when the principal has no resolvable SID.
+        $holderMatchesPrincipal = {
+            param($Holder, $PrincipalEntry)
+
+            if ($PrincipalEntry.Sid) {
+                $holderSidValue = ConvertTo-TierModelIdentitySid -Identity $Holder
+                if ($holderSidValue) { return ($holderSidValue -eq $PrincipalEntry.Sid) }
+            }
+
+            $samValue = $PrincipalEntry.Sam
+            if ([string]::IsNullOrWhiteSpace($samValue)) { return $false }
+            return ($Holder -eq "$netBIOSDomain\$samValue" -or $Holder -like "*\$samValue")
+        }
+
         if (-not $Silent) {
             Write-Host "Auditing Windows LAPS DACL delegations..." -ForegroundColor Cyan
         }
@@ -134,23 +169,20 @@ function Test-TierModelWinLapsAcl {
             $readGroupNames = @($delegation.readGroup)
             $resetGroupNames = @($delegation.resetGroup)
 
-            # Resolve group sAMAccountNames for matching
-            $readSamNames = @()
-            foreach ($gName in $readGroupNames) {
-                try {
-                    $escapedName = $gName -replace "'", "''"
-                    $adGroup = Get-ADGroup -Filter "Name -eq '$escapedName'" -Server $DomainController -Properties sAMAccountName -ErrorAction Stop
-                    if ($adGroup) { $readSamNames += $adGroup.sAMAccountName }
-                } catch { $readSamNames += $gName }
-            }
-            $resetSamNames = @()
-            foreach ($gName in $resetGroupNames) {
-                try {
-                    $escapedName = $gName -replace "'", "''"
-                    $adGroup = Get-ADGroup -Filter "Name -eq '$escapedName'" -Server $DomainController -Properties sAMAccountName -ErrorAction Stop
-                    if ($adGroup) { $resetSamNames += $adGroup.sAMAccountName }
-                } catch { $resetSamNames += $gName }
-            }
+            # Resolve each configured group to its SID and sAMAccountName.
+            #
+            # SID FIRST, via Resolve-TierModelPrincipalSid: the DC delegation names 'Domain Admins',
+            # a built-in whose directory name is localised per domain. The previous
+            # Get-ADGroup -Filter "Name -eq 'Domain Admins'" returns an EMPTY RESULT on a German
+            # domain (a filter that matches nothing does not throw), which left the name list empty
+            # and made the audit report the delegation compliant without ever checking it.
+            #
+            # The sAMAccountName is still carried for the finding text and as the fallback match for
+            # a principal that has no resolvable SID.
+            $readPrincipals = @(Resolve-TierModelLapsPrincipal -GroupNames $readGroupNames -DomainController $DomainController)
+            $resetPrincipals = @(Resolve-TierModelLapsPrincipal -GroupNames $resetGroupNames -DomainController $DomainController)
+            $readSamNames = @($readPrincipals | ForEach-Object { $_.Sam })
+            $resetSamNames = @($resetPrincipals | ForEach-Object { $_.Sam })
 
             # Check OU exists
             try {
@@ -184,8 +216,10 @@ function Test-TierModelWinLapsAcl {
 
             try {
                 $ouAcl    = Get-Acl -Path "AD:$resolvedOuDn" -ErrorAction Stop
+                # SELF is matched by SID (S-1-5-10); see $expectedAdminHolderSids above for why a
+                # name comparison cannot work on a localised host.
                 $selfAces = @($ouAcl.Access | Where-Object {
-                    $_.IdentityReference.Value -eq 'NT AUTHORITY\SELF' -and
+                    (ConvertTo-TierModelIdentitySid -Identity $_.IdentityReference) -eq 'S-1-5-10' -and
                     -not $_.IsInherited -and
                     ($lapsSchemaGUIDs.Count -eq 0 -or $_.ObjectType -in $lapsSchemaGUIDs)
                 })
@@ -211,37 +245,33 @@ function Test-TierModelWinLapsAcl {
                         if ($right.PSObject.Properties['ExtendedRightHolders']) {
                             $holders = @($right.ExtendedRightHolders)
                             # Check each read principal is present
-                            foreach ($sam in $readSamNames) {
+                            foreach ($rp in $readPrincipals) {
                                 $found = $false
                                 foreach ($holder in $holders) {
-                                    if ($holder -eq "$netBIOSDomain\$sam" -or $holder -like "*\$sam") {
+                                    if (& $holderMatchesPrincipal $holder $rp) {
                                         $found = $true
                                         break
                                     }
                                 }
-                                if (-not $found) { $readMissing += $sam }
+                                if (-not $found) { $readMissing += $rp.Sam }
                             }
                             # Check each reset principal is present
-                            foreach ($sam in $resetSamNames) {
+                            foreach ($rp in $resetPrincipals) {
                                 $found = $false
                                 foreach ($holder in $holders) {
-                                    if ($holder -eq "$netBIOSDomain\$sam" -or $holder -like "*\$sam") {
+                                    if (& $holderMatchesPrincipal $holder $rp) {
                                         $found = $true
                                         break
                                     }
                                 }
-                                if (-not $found) { $resetMissing += $sam }
+                                if (-not $found) { $resetMissing += $rp.Sam }
                             }
 
                             # Detect unexpected principals holding LAPS read/reset rights (drift).
                             # Well-known/administrative principals are legitimately present and skipped.
                             foreach ($holder in $holders) {
-                                if ($holder -eq 'NT AUTHORITY\SELF' -or
-                                    $holder -eq 'NT AUTHORITY\SYSTEM' -or
-                                    $holder -eq 'BUILTIN\Administrators' -or
-                                    $holder -like '*\Domain Admins' -or
-                                    $holder -like '*\Enterprise Admins' -or
-                                    $holder -like '*\Administrators') {
+                                $holderSid = ConvertTo-TierModelIdentitySid -Identity $holder
+                                if ($holderSid -and $expectedAdminHolderSids -contains $holderSid) {
                                     continue
                                 }
                                 # Skip principals whose LAPS access derives from a GenericAll
@@ -257,8 +287,8 @@ function Test-TierModelWinLapsAcl {
                                 }
                                 if ($viaGenericAll) { continue }
                                 $isExpectedHolder = $false
-                                foreach ($sam in @($readSamNames + $resetSamNames)) {
-                                    if ($holder -eq "$netBIOSDomain\$sam" -or $holder -like "*\$sam") {
+                                foreach ($rp in @($readPrincipals + $resetPrincipals)) {
+                                    if (& $holderMatchesPrincipal $holder $rp) {
                                         $isExpectedHolder = $true
                                         break
                                     }

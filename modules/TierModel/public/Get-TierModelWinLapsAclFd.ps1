@@ -158,16 +158,14 @@ function Get-TierModelWinLapsAclFd {
             }
         }
         $uniqueGroups = @($allGroupNames | Select-Object -Unique)
-        foreach ($group in $uniqueGroups) {
-            try {
-                $escapedName = $group -replace "'", "''"
-                $adGroup = Get-ADGroup -Filter "Name -eq '$escapedName'" -Server $DomainController -Properties sAMAccountName -ErrorAction Stop
-                if ($adGroup) {
-                    $groupResolution[$group] = "$netBIOSDomain\$($adGroup.sAMAccountName)"
-                }
-            } catch {
-                # Exception path — handled by the best-effort fallback below.
+        # Resolve through the shared helper so built-ins ('Domain Admins' on the DC delegation) go
+        # via their SID; a name filter returns nothing for them on a localised directory.
+        foreach ($resolvedGroup in Resolve-TierModelLapsPrincipal -GroupNames $uniqueGroups -DomainController $DomainController -NetBiosDomain $netBIOSDomain) {
+            if ($resolvedGroup.Found -and $resolvedGroup.Qualified) {
+                $groupResolution[$resolvedGroup.Config] = $resolvedGroup.Qualified
             }
+        }
+        foreach ($group in $uniqueGroups) {
             if (-not $groupResolution.ContainsKey($group)) {
                 # In FD mode the group may not exist yet (created by an earlier phase). Get-ADGroup
                 # -Filter returns nothing (no exception) for a missing group, so fall back to a
@@ -287,7 +285,7 @@ function Get-TierModelWinLapsAclFd {
                     # Note: if strict multi-DC targeting is needed, use [ADSI]"LDAP://$DomainController/$dn" + .ObjectSecurity
                     $ouAcl = Get-Acl -Path "AD:$resolvedOuDn" -ErrorAction Stop
                     $selfAces = @($ouAcl.Access | Where-Object {
-                        $_.IdentityReference.Value -eq 'NT AUTHORITY\SELF' -and
+                        (ConvertTo-TierModelIdentitySid -Identity $_.IdentityReference) -eq 'S-1-5-10' -and
                         -not $_.IsInherited -and
                         ($lapsSchemaGUIDs.Count -eq 0 -or $_.ObjectType -in $lapsSchemaGUIDs)
                     })

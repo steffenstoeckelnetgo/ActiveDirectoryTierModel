@@ -208,28 +208,20 @@ function Get-TierModelWinLapsAcl {
         }
         $uniqueGroups = @($allGroupNames | Select-Object -Unique)
 
-        foreach ($group in $uniqueGroups) {
-            try {
-                $escapedName = $group -replace "'", "''"
-                $adGroup = Get-ADGroup -Filter "Name -eq '$escapedName'" -Server $DomainController -Properties sAMAccountName -ErrorAction Stop
-                if ($adGroup) {
-                    $groupResolution[$group] = "$netBIOSDomain\$($adGroup.sAMAccountName)"
-                } else {
-                    $planErrors += @{
-                        Timestamp = Get-Date
-                        Category  = 'Validation'
-                        Code      = 'RequiredGroupNotFound'
-                        Message   = "Required group '$group' does not exist - create Groups first"
-                        Context   = @{ GroupName = $group }
-                    }
-                }
-            } catch {
+        # Resolve through the shared helper so built-ins go via their SID. The previous
+        # Get-ADGroup -Filter "Name -eq '<config name>'" returns an EMPTY RESULT (it does not
+        # throw) for 'Domain Admins' on a localised domain, which recorded RequiredGroupNotFound
+        # and blocked the entire Windows LAPS deployment on a German directory.
+        foreach ($resolvedGroup in Resolve-TierModelLapsPrincipal -GroupNames $uniqueGroups -DomainController $DomainController -NetBiosDomain $netBIOSDomain) {
+            if ($resolvedGroup.Found -and $resolvedGroup.Qualified) {
+                $groupResolution[$resolvedGroup.Config] = $resolvedGroup.Qualified
+            } else {
                 $planErrors += @{
                     Timestamp = Get-Date
                     Category  = 'Validation'
                     Code      = 'RequiredGroupNotFound'
-                    Message   = "Required group '$group' does not exist - create Groups first"
-                    Context   = @{ GroupName = $group }
+                    Message   = "Required group '$($resolvedGroup.Config)' does not exist - create Groups first"
+                    Context   = @{ GroupName = $resolvedGroup.Config }
                 }
             }
         }
@@ -340,8 +332,12 @@ function Get-TierModelWinLapsAcl {
                 # (Get-ADOrganizationalUnit -Properties nTSecurityDescriptor can misreport IsInherited=True in PS7)
                 # Note: if strict multi-DC targeting is needed, use [ADSI]"LDAP://$DomainController/$dn" + .ObjectSecurity
                 $ouAcl = Get-Acl -Path "AD:$resolvedOuDn" -ErrorAction Stop
+                # Match SELF by SID (S-1-5-10), not by name: Get-Acl renders IdentityReference
+                # through the LOCAL machine's translation, which on German Windows reads
+                # 'NT-AUTORITAET\SELBST'. A name comparison never matches there, so the SELF ACE
+                # would look absent and the delegation would be re-applied on every run.
                 $selfAces = @($ouAcl.Access | Where-Object {
-                    $_.IdentityReference.Value -eq 'NT AUTHORITY\SELF' -and
+                    (ConvertTo-TierModelIdentitySid -Identity $_.IdentityReference) -eq 'S-1-5-10' -and
                     -not $_.IsInherited -and
                     ($lapsSchemaGUIDs.Count -eq 0 -or $_.ObjectType -in $lapsSchemaGUIDs)
                 })

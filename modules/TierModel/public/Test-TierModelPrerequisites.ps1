@@ -141,36 +141,29 @@ function Test-TierModelPrerequisites {
             $null = $result.Remediation.Add("Start PowerShell as Administrator (Run as administrator)")
         }
 
-        # --- English-language host operating system check (unconditional) ---
-        # The Tier Model supports English (en-US) Windows only. Verify the OS of the host
-        # running this script (admin workstation OR domain controller) was installed in
-        # English by reading the static InstallLanguage LCID from
-        # HKLM\SYSTEM\CurrentControlSet\Control\Nls\Language. Any English variant passes
-        # (primary language 0x09 — en-US, en-GB, ...); the AD group-name check further below
-        # is the authoritative directory-language gate. This runs before the Pester/module
-        # checks so a non-English host stops immediately — there is no reason to have the
-        # operator install modules on an unsupported OS. Guarded: if the language cannot be
-        # read, record it and continue. See docs/language-support.md.
+        # --- Host operating system language (DIAGNOSTIC ONLY) ---
+        # This used to be a gate: anything but an English install language stopped the run before
+        # any other check. It no longer is. Every built-in principal the Tier Model references is
+        # now resolved by well-known SID rather than by its (localised, renameable) directory name,
+        # so the host's install language does not change what gets deployed.
+        #
+        # The language is still read and recorded, because it is the first thing worth knowing when
+        # diagnosing a locale-related report. HostOsEnglish is kept for compatibility with existing
+        # tooling that reads the snapshot. See specs/008-german-language-support/spec.md.
         try {
             $hostInstallLanguage = Get-ItemPropertyValue -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Nls\Language' -Name 'InstallLanguage' -ErrorAction Stop
             $result.EnvironmentSnapshot.HostInstallLanguage = $hostInstallLanguage
             $hostPrimaryLanguage = ([Convert]::ToInt32([string]$hostInstallLanguage, 16)) -band 0x3FF
-            $hostOsEnglish = ($hostPrimaryLanguage -eq 0x09)
-            $result.EnvironmentSnapshot.HostOsEnglish = $hostOsEnglish
-            if (-not $hostOsEnglish) {
-                $result.Valid = $false
-                $null = $result.Errors.Add("Non-English host operating system detected. The Tier Model supports English (en-US) Windows only.")
-                $null = $result.Remediation.Add("Run Deploy and Audit from an English (en-US) Windows host. See Language Support: https://microsoft.github.io/ActiveDirectoryTierModel/language-support/")
-                # Fail fast: stop before the module/domain/AD checks on an unsupported OS.
-                $result.Errors = @($result.Errors)
-                $result.Remediation = @($result.Remediation)
-                Write-Output $result
-                return
+            $result.EnvironmentSnapshot.HostOsEnglish = ($hostPrimaryLanguage -eq 0x09)
+            $result.EnvironmentSnapshot.HostOsPrimaryLanguageId = ('0x{0:X3}' -f $hostPrimaryLanguage)
+            $result.EnvironmentSnapshot.HostOsLanguage = try {
+                ([System.Globalization.CultureInfo]::GetCultureInfo([Convert]::ToInt32([string]$hostInstallLanguage, 16))).Name
+            } catch {
+                'Unknown'
             }
         }
         catch {
             # Could not determine the host install language (e.g. registry value absent).
-            # Do not hard-block on the OS signal; the AD language check still applies.
             $result.EnvironmentSnapshot.HostOsLanguageCheckError = $_.Exception.Message
         }
 
@@ -375,10 +368,34 @@ function Test-TierModelPrerequisites {
                     $null = $result.Remediation.Add("Run the deployment from a host with a PowerShell 7-native RSAT ActiveDirectory module (Windows 11 / Windows Server 2022 or later).")
                 }
                 elseif (Get-Module ActiveDirectory) {
+                    # Corroborate that the Domain Admins group is readable.
+                    #
+                    # Resolved BY SID - RID 512 under the domain SID - not by the name
+                    # 'Domain Admins'. That name is localised at domain creation (a German domain
+                    # calls the group 'Domaenen-Admins') and can be renamed, so the name lookup
+                    # returned nothing there and this block failed the entire prerequisite check
+                    # with "Domain Admin membership required for deployment operations" against a
+                    # perfectly valid domain admin. The authoritative membership verdict above
+                    # already works from RID 512 on the logon token; this now matches it.
+                    #
                     # SilentlyContinue is INTENTIONAL here. The result is explicitly
                     # null-guarded by the if below, which degrades to a warning rather than a hard
                     # prerequisite failure. Do not change to Stop.
-                    $domainAdmins = Get-ADGroup -Identity "Domain Admins" -Server $PreferredDc -ErrorAction SilentlyContinue
+                    $domainAdmins = $null
+                    try {
+                        $daDomain = Get-ADDomain -Server $PreferredDc -ErrorAction Stop
+                        $daDomainSid = if ($daDomain.DomainSID -is [System.Security.Principal.SecurityIdentifier]) {
+                            $daDomain.DomainSID.Value
+                        } else {
+                            [string]$daDomain.DomainSID
+                        }
+                        if (-not [string]::IsNullOrWhiteSpace($daDomainSid)) {
+                            $domainAdmins = Get-ADGroup -Identity "$daDomainSid-512" -Server $PreferredDc -ErrorAction SilentlyContinue
+                        }
+                    }
+                    catch {
+                        $domainAdmins = $null
+                    }
 
                     if ($domainAdmins) {
                         if (-not $isDomainAdmin -and -not $domainAdminCheckFailed) {
@@ -449,12 +466,27 @@ function Test-TierModelPrerequisites {
                         $result.EnvironmentSnapshot.IsChildDomain = $isChildDomain
                         $result.EnvironmentSnapshot.ForestRootDomain = $forest.RootDomain
                         
-                        # Check for Enterprise Admins group (may not exist in child domains)
+                        # Check for Enterprise Admins group (may not exist in child domains).
+                        # Resolved BY SID (RID 519) for the same reason as Domain Admins above:
+                        # the name is localised per domain. RID 519 is allocated only in the forest
+                        # root, so in a child domain the lookup finds nothing - which is exactly the
+                        # supported configuration the note below describes.
                         try {
                             # SilentlyContinue is INTENTIONAL here. Enterprise Admins legitimately
                             # does not exist in a child domain, so absence is a supported configuration, not
                             # an error. Do not change to Stop.
-                            $enterpriseAdmins = Get-ADGroup -Identity "Enterprise Admins" -Server $PreferredDc -ErrorAction SilentlyContinue
+                            $eaDomainSid = if ($domain -and $domain.DomainSID -is [System.Security.Principal.SecurityIdentifier]) {
+                                $domain.DomainSID.Value
+                            } elseif ($domain) {
+                                [string]$domain.DomainSID
+                            } else {
+                                $null
+                            }
+                            $enterpriseAdmins = if (-not [string]::IsNullOrWhiteSpace($eaDomainSid)) {
+                                Get-ADGroup -Identity "$eaDomainSid-519" -Server $PreferredDc -ErrorAction SilentlyContinue
+                            } else {
+                                $null
+                            }
                             $result.EnvironmentSnapshot.HasEnterpriseAdmins = [bool]$enterpriseAdmins
                         }
                         catch {
@@ -491,14 +523,17 @@ function Test-TierModelPrerequisites {
             }
         }
         
-        # --- English-language Active Directory check (unconditional) ---
-        # The Tier Model references well-known principals by their English names. On a
-        # fully-localized non-English domain those names differ (set at domain creation
-        # from the DC install language and replicated), so deployments and audits would
-        # fail. Resolve three well-known groups BY SID and confirm each directory Name is
-        # its expected English value. Names are read from AD (not translated client-side,
-        # which the local OS would localize and give a false pass). Guarded so it is a
-        # no-op when AD cannot be evaluated; see docs/language-support.md for the policy.
+        # --- Active Directory language (DIAGNOSTIC ONLY) ---
+        # This used to be a gate: if the three canary groups did not carry their English names,
+        # the run stopped. It no longer is. The configuration's English names are treated as
+        # canonical identifiers and resolved to well-known SIDs (see Resolve-TierModelPrincipalSid),
+        # so a localised directory deploys exactly the same security configuration as an English one.
+        #
+        # The canaries are still resolved BY SID and their directory names recorded, because
+        # knowing the directory's language is the first useful fact when triaging a report from a
+        # non-English estate. Names are read from AD rather than translated client-side, which the
+        # local OS would localise independently of the directory.
+        # See specs/008-german-language-support/spec.md.
         if (Get-Module ActiveDirectory -ErrorAction SilentlyContinue) {
             try {
                 $adLangDomain = Get-ADDomain -Server $PreferredDc -ErrorAction Stop
@@ -513,34 +548,35 @@ function Test-TierModelPrerequisites {
                         [PSCustomObject]@{ Expected = 'Account Operators'; Sid = 'S-1-5-32-548' }
                     )
 
-                    $languageMismatches = [System.Collections.ArrayList]@()
+                    $localizedCanaryNames = [System.Collections.ArrayList]@()
                     $resolvedAnyCanary = $false
+                    $allCanariesEnglish = $true
                     foreach ($canary in $englishCanaries) {
                         try {
                             $grp = Get-ADGroup -Identity $canary.Sid -Server $PreferredDc -ErrorAction Stop
                         }
                         catch {
-                            # A single well-known group could not be resolved; skip it so a
-                            # transient failure cannot mask a confirmed mismatch on another.
+                            # A single well-known group could not be resolved; skip it rather than
+                            # drawing a conclusion about the directory's language from it.
                             continue
                         }
                         if ($null -ne $grp -and -not [string]::IsNullOrEmpty($grp.Name)) {
                             $resolvedAnyCanary = $true
                             if ($grp.Name -ne $canary.Expected) {
-                                $null = $languageMismatches.Add("$($canary.Expected) is named '$($grp.Name)'")
+                                $allCanariesEnglish = $false
+                                $null = $localizedCanaryNames.Add("$($canary.Expected) is named '$($grp.Name)'")
                             }
                         }
                     }
 
-                    if ($languageMismatches.Count -gt 0) {
-                        $result.Valid = $false
-                        $result.EnvironmentSnapshot.AdLanguageEnglish = $false
-                        $result.EnvironmentSnapshot.AdLanguageMismatches = @($languageMismatches)
-                        $null = $result.Errors.Add("Non-English Active Directory detected. The Tier Model supports English (en-US) Active Directory only.")
-                        $null = $result.Remediation.Add("Run Deploy and Audit against an English (en-US) Active Directory. See Language Support: https://microsoft.github.io/ActiveDirectoryTierModel/language-support/")
-                    }
-                    elseif ($resolvedAnyCanary) {
-                        $result.EnvironmentSnapshot.AdLanguageEnglish = $true
+                    if ($resolvedAnyCanary) {
+                        $result.EnvironmentSnapshot.AdLanguageEnglish = $allCanariesEnglish
+                        $result.EnvironmentSnapshot.AdLanguage = if ($allCanariesEnglish) { 'en' } else { 'localized' }
+                        if ($localizedCanaryNames.Count -gt 0) {
+                            # Kept under the original key so existing diagnostics keep working. It is
+                            # now an observation about the directory, not a failure.
+                            $result.EnvironmentSnapshot.AdLanguageMismatches = @($localizedCanaryNames)
+                        }
                     }
                 }
             }

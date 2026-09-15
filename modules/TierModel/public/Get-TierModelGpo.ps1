@@ -118,7 +118,7 @@ function Get-TierModelGpo {
                 if (-not $isTemplate) {
                     # Check if this is the domain root or built-in containers (always exist)
                     $isDomainRoot = $resolvedOUPath -match '^DC=.*,DC=.*$' -and $resolvedOUPath -notmatch '^OU=' -and $resolvedOUPath -notmatch '^CN='
-                    $isBuiltinContainer = ($resolvedOUPath -match '^OU=Domain Controllers,DC=') -or ($resolvedOUPath -match '^CN=Builtin,DC=') -or ($resolvedOUPath -match '^CN=Users,DC=')
+                    $isBuiltinContainer = Test-TierModelWellKnownContainer -DistinguishedName $resolvedOUPath -DomainController $DomainController
                     
                     if (-not $isDomainRoot -and -not $isBuiltinContainer) {
                         try {

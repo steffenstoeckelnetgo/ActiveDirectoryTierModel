@@ -165,7 +165,7 @@ function Get-TierModelGpoFd {
                         # For Full Deployment: Check if GPO is linked, but only for domain root and built-in containers
                         # For custom OUs, assume linking will be done during deployment
                         $isDomainRoot = $TargetOU -match '^DC=.*,DC=.*$' -and $TargetOU -notmatch '^OU=' -and $TargetOU -notmatch '^CN='
-                        $isBuiltinContainer = ($TargetOU -match '^OU=Domain Controllers,DC=') -or ($TargetOU -match '^CN=Builtin,DC=') -or ($TargetOU -match '^CN=Users,DC=')
+                        $isBuiltinContainer = Test-TierModelWellKnownContainer -DistinguishedName $TargetOU -DomainController $DomainController
                         
                         if ($isDomainRoot -or $isBuiltinContainer) {
                             # Check if GPO is linked to the target OU (only for built-in OUs)
@@ -284,7 +284,7 @@ function Get-TierModelGpoFd {
                 if (-not $isTemplate) {
                     # Check if this is the domain root or built-in containers (always exist)
                     $isDomainRoot = $resolvedOUPath -match '^DC=.*,DC=.*$' -and $resolvedOUPath -notmatch '^OU=' -and $resolvedOUPath -notmatch '^CN='
-                    $isBuiltinContainer = ($resolvedOUPath -match '^OU=Domain Controllers,DC=') -or ($resolvedOUPath -match '^CN=Builtin,DC=') -or ($resolvedOUPath -match '^CN=Users,DC=')
+                    $isBuiltinContainer = Test-TierModelWellKnownContainer -DistinguishedName $resolvedOUPath -DomainController $DomainController
                     
                     # Only validate built-in containers and domain root - assume custom OUs will be created
                     if ($isDomainRoot -or $isBuiltinContainer) {
