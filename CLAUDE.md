@@ -162,7 +162,8 @@ Run: `.\tests\Invoke-AllTests.ps1` (`-TestType Unit|Integration`, `-FailedOnly`,
    `NTAccount(...).Translate()` throws and the code under test takes a path the test did not
    intend. Write the SID (`'S-1-5-10'`, `'S-1-5-32-544'`) into the fixture, or derive the name
    from the SID at run time. Comments in the suite claiming these names *"resolve on any Windows
-   machine"* are wrong; **33 tests fail on German Windows for exactly this reason** (§6).
+   machine"* are wrong; **31 tests fail on German Windows for exactly this reason** (§6) — 28
+   through `NTAccount(...).Translate()` and 3 through an assertion on the rendered name.
 8. **`IsDomainAdmin` cannot be mocked.** `Test-TierModelPrerequisites` reads it from the caller's
    own logon token (`[WindowsIdentity]::GetCurrent()`), deliberately, so that a string-typed SID
    from the compatibility shim cannot fake membership. On a host where the session really *is* a
@@ -254,7 +255,7 @@ Ordered. Items 1–3 are the actual acceptance gate.
    gate for the resolver and it is now met. `docs/german-lab-runbook.md` Phase A is the
    repeatable form of this run.
 2. **The 41 failures, classified.** Eight belonged to this branch and are fixed (§5). The
-   remaining **33 are pre-existing** — they fail on `origin/main` on the same host, they live in
+   remaining **32 are pre-existing** — they fail on `origin/main` on the same host, they live in
    files this branch does not touch, and their causes are the host's language and the session's
    own token, not this change:
 
@@ -265,16 +266,21 @@ Ordered. Items 1–3 are the actual acceptance gate.
    | `Unit.GmsaAclOperations` | 7 | same |
    | `Unit.DmsaAclOperations` | 4 | same |
    | `Unit.CanonicalAcl` | 3 | `Should -Match 'Everyone\|S-1-1-0'` against the directory's `Jeder` |
-   | `Unit.CanonicalAcl` | 1 | interactive `PreferredDc:` prompt instead of a parameter-binding error — run the suite in a non-interactive window |
    | `Unit.Prerequisites` | 1 | `IsDomainAdmin` comes from the real logon token (§4 trap 8) |
 
-   **Fixing these is a separate concern** (CONTRIBUTING: one concern per PR) and needs its own
-   issue. They are also invisible to CI, which runs English and non-interactive — which is why
-   they survived this long.
+   The 41st, *"ByBytes does not require -PreferredDc"*, is not in that table because it is not a
+   property of the host at all: it asserts that a missing mandatory `-PreferredDc` raises a
+   binding error, and an interactive host **prompts** for the parameter instead of raising it, so
+   the whole run stops there. Start the suite as `pwsh -NonInteractive -File
+   .\tests\Invoke-AllTests.ps1` — that is what CI does, and the test passes. (At the prompt,
+   an empty line also produces a binding error and passes; a typed DC name does not.)
+
+   **Fixing the other 32 is a separate concern** (CONTRIBUTING: one concern per PR) and needs its
+   own issue. They are invisible to CI, which runs English — which is why they survived this long.
 
    Measured figures for comparison against a future run. Linux harness: baseline 1680 passed of
    1994; HEAD **1715 of 2053**, 0 regressions against the pre-fix HEAD. Windows: 2012 of 2053,
-   expected to become **2020 of 2053** on the next run.
+   expected to become **2021 of 2053** on the next run.
 
    Not a regression, and not open: `Unit.ModuleManifest` is already only 6 of 63 green on the
    **baseline** under Linux, so that file is platform-broken rather than affected by this change.

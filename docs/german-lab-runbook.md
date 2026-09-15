@@ -78,13 +78,19 @@ the expected answer** — one per Windows LAPS SELF fixture:
 
 ### A1 — Full test suite
 
-Run it in a **non-interactive-friendly** window and do not type into it. One test
-(*"ByBytes does not require -PreferredDc"*) invokes a cmdlet expecting a parameter-binding
-error; an interactive host answers with a `PreferredDc:` prompt instead and the test waits.
+**Start it with `-NonInteractive`.** One test calls `Test-TierModelCanonicalAcl` with no
+parameters and asserts that the missing mandatory `-PreferredDc` produces a binding error. An
+interactive host does not raise that error — it prompts for the parameter and the whole run
+stops there, waiting. `-NonInteractive` restores the behaviour CI sees.
 
 ```powershell
-.\tests\Invoke-AllTests.ps1
+pwsh -NonInteractive -File .\tests\Invoke-AllTests.ps1
 ```
+
+If you do end up at a `PreferredDc:` prompt, **press Enter on an empty line**. An empty string
+fails the binding, which is the error the test wants, so the test passes and the run continues.
+Typing a DC name is the wrong answer: the cmdlet then runs, spends ~20 s on an LDAP timeout,
+catches the failure and returns an object — no exception, and the test fails.
 
 **Ignore the console output until the very end. It looks far worse than it is.** The integration
 tests drive the real `Deploy-TierModel.ps1` and `Audit-TierModel.ps1` with mocked prerequisites
@@ -103,7 +109,7 @@ that decides anything is the summary at the end:
 
 ```
 Tests completed in <n>s
-Tests Passed: 2020, Failed: 33, Skipped: 0, ...
+Tests Passed: 2021, Failed: 32, Skipped: 0, ...
 ```
 
 Let it finish. Aborting mid-way tells you nothing.
@@ -114,12 +120,12 @@ Let it finish. Aborting mid-way tells you nothing.
 |---|---|
 | `tests\Unit.CanonicalPrincipal.Tests.ps1` | **59 of 59 green.** This is the acceptance gate for the resolver. On Linux 22 of them fail purely because a SID cannot be constructed there; here there is no such excuse. Confirmed green on 2026-09-15. |
 | `Unit.WinLapsAclOperations`, `Integration.WinLapsDeployment`, `Unit.GpoOperations` | Green. |
-| Total | **2020 of 2053**, with the 33 known failures below. |
+| Total | **2021 of 2053**, with the 32 known failures below. |
 
-**Known to fail, and not this branch's doing.** All 33 also fail on `origin/main` on the same
+**Known to fail, and not this branch's doing.** All 32 also fail on `origin/main` on the same
 host. They are English-only test fixtures meeting a German Windows host, plus one that reads the
-session's real token. CI never sees them because it runs English and non-interactive. They have
-their own issue; do not chase them here.
+session's real token. CI never sees them because it runs English. They have their own issue;
+do not chase them here.
 
 | File | × | Cause |
 |---|--:|---|
@@ -128,13 +134,15 @@ their own issue; do not chase them here.
 | `Unit.GmsaAclOperations` | 7 | same |
 | `Unit.DmsaAclOperations` | 4 | same |
 | `Unit.CanonicalAcl` | 3 | asserts `Everyone\|S-1-1-0`; the directory renders `Jeder` |
-| `Unit.CanonicalAcl` | 1 | the interactive prompt described above |
 | `Unit.Prerequisites` | 1 | *"… report not-admin"* — `IsDomainAdmin` comes from `[WindowsIdentity]::GetCurrent()`, and this session really is a Domain Admin. No mock can change that. |
+
+A 33rd, *"ByBytes does not require -PreferredDc"*, is on this list only when the suite is started
+without `-NonInteractive`; see the note above.
 
 If anything **else** fails, capture it — that is a genuine finding.
 
 ```powershell
-.\tests\Invoke-AllTests.ps1 -FailedOnly   # compact list of failures only
+pwsh -NonInteractive -File .\tests\Invoke-AllTests.ps1 -FailedOnly   # failures only
 ```
 
 ### A2 — Lint (a CI gate)
