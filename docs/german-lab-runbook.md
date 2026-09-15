@@ -52,6 +52,30 @@ Install-Module Pester -RequiredVersion 5.9.0 -Force -Scope CurrentUser
 Install-Module PSScriptAnalyzer -Force -Scope CurrentUser
 ```
 
+**Refreshing a copy from an earlier run.** The branch moves; a second run against a stale
+working copy proves nothing.
+
+```powershell
+# With git:
+git fetch origin
+git reset --hard origin/claude/beautiful-galileo-skfp32
+
+# Without git: re-download and expand into a FRESH directory. Expand-Archive does not
+# reliably overwrite into an occupied target, so an existing folder silently keeps old files.
+$url = 'https://github.com/steffenstoeckelnetgo/ActiveDirectoryTierModel/archive/refs/heads/claude/beautiful-galileo-skfp32.zip'
+Invoke-WebRequest $url -OutFile "$env:TEMP\tiermodel.zip"
+Remove-Item C:\Temp\TierModel -Recurse -Force -ErrorAction SilentlyContinue
+Expand-Archive "$env:TEMP\tiermodel.zip" -DestinationPath C:\Temp\TierModel
+cd (Get-ChildItem C:\Temp\TierModel -Directory | Select-Object -First 1).FullName
+```
+
+A ZIP copy has no `git log`, so confirm the revision from its content instead. **Eight hits is
+the expected answer** — one per Windows LAPS SELF fixture:
+
+```powershell
+(Select-String "Value = 'S-1-5-10'" .\tests\Unit.WinLapsAclOperations.Tests.ps1).Count   # must be 8
+```
+
 ### A1 — Full test suite
 
 Run it in a **non-interactive-friendly** window and do not type into it. One test
@@ -136,7 +160,8 @@ case the old code refused to run against.
 written here.
 
 ```powershell
-.\Deploy-TierModel.ps1 -PreferredDc $dc -FullDeployment -IncludeWinLaps -IncludeAuthSilos
+.\Deploy-TierModel.ps1 -PreferredDc $dc -FullDeployment `
+    -IncludeMsa -IncludeGmsa -IncludeDmsa -IncludeWinLaps -IncludeAuthSilos
 ```
 
 **What must be true**
@@ -150,12 +175,30 @@ written here.
 Keep the console output. If the run stops here, **stop** and send it — there is no point
 deploying a plan that is already wrong.
 
+**Why `-IncludeMsa -IncludeGmsa -IncludeDmsa` are in that line.** `-FullDeployment` does *not*
+imply them — they are separate scopes and have to be asked for. They are worth asking for here:
+`New-TierModelMsaAcl`, `New-TierModelGmsaAcl` and `New-TierModelDmsaAcl` resolve their delegate
+through `NTAccount(...).Translate()`, exactly like `New-TierModelOuAcl`, and the 28 unit tests
+covering those four cmdlets are precisely the ones that cannot run on a German host (the
+*Known to fail* table in A1). So these paths have never been exercised against a localized
+directory — not in a test, not in a lab.
+
+They are *expected* to be fine: every `identityreference` in `config/*.json` names a Tier Model
+group (`Tier0Admins`, `PAWDomainJoin`, …), never a built-in, and those names are the same in
+every language. That is a reading of the configuration, not a measurement. This run is what
+turns it into one.
+
+Note the limit: `optional/Test-TierModelLocalizedDeployment.ps1` (Phase E) has no MSA switches
+and does **not** report on them. For those three, the deploy log and the action count of the
+second run are the whole record.
+
 ---
 
 ## Phase C — Deploy
 
 ```powershell
-.\Deploy-TierModel.ps1 -PreferredDc $dc -FullDeployment -IncludeWinLaps -IncludeAuthSilos `
+.\Deploy-TierModel.ps1 -PreferredDc $dc -FullDeployment `
+    -IncludeMsa -IncludeGmsa -IncludeDmsa -IncludeWinLaps -IncludeAuthSilos `
     -ConfirmApply -Logging -OutputFileBase "TierModel-Deploy-DE-01"
 ```
 
@@ -169,7 +212,8 @@ The single most informative step after the deployment itself. Run **exactly the 
 again**:
 
 ```powershell
-.\Deploy-TierModel.ps1 -PreferredDc $dc -FullDeployment -IncludeWinLaps -IncludeAuthSilos `
+.\Deploy-TierModel.ps1 -PreferredDc $dc -FullDeployment `
+    -IncludeMsa -IncludeGmsa -IncludeDmsa -IncludeWinLaps -IncludeAuthSilos `
     -ConfirmApply -Logging -OutputFileBase "TierModel-Deploy-DE-02"
 ```
 
