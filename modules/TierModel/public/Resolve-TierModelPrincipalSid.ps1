@@ -622,18 +622,35 @@ function Resolve-TierModelLapsPrincipal {
         if (-not $resolvedSam) {
             # No SID, or no readable group object: keep the previous name-based lookup so nothing
             # that worked before stops working.
+            $adGroupByName = $null
             try {
                 $escapedName = $groupName -replace "'", "''"
+                # -Filter does not throw when nothing matches, it returns empty. This catch is
+                # therefore for a genuine read failure, not for "group not found".
                 $adGroupByName = Get-ADGroup -Filter "Name -eq '$escapedName'" -Server $DomainController -Properties sAMAccountName -ErrorAction Stop
-                if ($adGroupByName) {
-                    $resolvedSam = $adGroupByName.sAMAccountName
-                    if (-not $resolvedSid) {
-                        $resolvedSid = ConvertTo-TierModelSidString -InputSid $adGroupByName.SID -Context "group '$groupName'"
-                    }
-                }
             }
             catch {
-                $resolvedSam = $null
+                $adGroupByName = $null
+            }
+
+            if ($adGroupByName) {
+                $resolvedSam = $adGroupByName.sAMAccountName
+
+                if (-not $resolvedSid) {
+                    # Normalising the SID gets its OWN try on purpose. It used to share the
+                    # lookup's catch, so a SID that failed to normalise also discarded the
+                    # sAMAccountName that had just been read successfully. That name is not a
+                    # nice-to-have: it is what the LAPS cmdlets and the audit match on when no
+                    # SID is available, so losing it turned a degraded result into no result -
+                    # the planner then reported RequiredGroupNotFound and blocked the whole
+                    # Windows LAPS deployment.
+                    try {
+                        $resolvedSid = ConvertTo-TierModelSidString -InputSid $adGroupByName.SID -Context "group '$groupName'"
+                    }
+                    catch {
+                        $resolvedSid = $null
+                    }
+                }
             }
         }
 
