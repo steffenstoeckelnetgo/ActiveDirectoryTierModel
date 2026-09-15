@@ -249,11 +249,12 @@ unverified is the *deployment*, not the resolver: see §6 item 5 and
 
 Ordered. Items 1–3 are the actual acceptance gate.
 
-1. ~~**Run the suite on Windows.**~~ **Done.** German Windows 11 / PowerShell 7.6.6 against a
-   German domain, as a Domain Admin: **2053 tests, 2012 passed, 41 failed**, and
-   `tests/Unit.CanonicalPrincipal.Tests.ps1` **59 of 59 green**. That file is the acceptance
-   gate for the resolver and it is now met. `docs/german-lab-runbook.md` Phase A is the
-   repeatable form of this run.
+1. ~~**Run the suite on Windows.**~~ **Done, twice.** German Windows 11 / PowerShell 7.6.6
+   against a German domain, as a Domain Admin. First run: 2012 passed of 2053, 41 failed.
+   After the eight fixes in §5: **2021 passed of 2053, 32 failed**, all of them the
+   pre-existing ones listed below. `tests/Unit.CanonicalPrincipal.Tests.ps1` was
+   **59 of 59 green** both times — that file is the acceptance gate for the resolver and it is
+   met. `docs/german-lab-runbook.md` Phase A is the repeatable form of this run.
 2. **The 41 failures, classified.** Eight belonged to this branch and are fixed (§5). The
    remaining **32 are pre-existing** — they fail on `origin/main` on the same host, they live in
    files this branch does not touch, and their causes are the host's language and the session's
@@ -278,9 +279,11 @@ Ordered. Items 1–3 are the actual acceptance gate.
    **Fixing the other 32 is a separate concern** (CONTRIBUTING: one concern per PR) and needs its
    own issue. They are invisible to CI, which runs English — which is why they survived this long.
 
-   Measured figures for comparison against a future run. Linux harness: baseline 1680 passed of
-   1994; HEAD **1715 of 2053**, 0 regressions against the pre-fix HEAD. Windows: 2012 of 2053,
-   expected to become **2021 of 2053** on the next run.
+   Measured figures. Windows, after the fixes: **2021 passed of 2053**, and the 32 failures are
+   the table above line for line — nothing outside it. `Unit.CanonicalPrincipal` 59 of 59,
+   `Unit.WinLapsAclOperations`, `Integration.WinLapsDeployment` and `Unit.GpoOperations` all
+   green. Before the fixes it was 2012 of 2053 with 41 failures. Linux harness: baseline 1680
+   passed of 1994; HEAD **1715 of 2053**, 0 regressions against the pre-fix HEAD.
 
    Not a regression, and not open: `Unit.ModuleManifest` is already only 6 of 63 green on the
    **baseline** under Linux, so that file is platform-broken rather than affected by this change.

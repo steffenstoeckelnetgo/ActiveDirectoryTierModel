@@ -120,7 +120,7 @@ Let it finish. Aborting mid-way tells you nothing.
 |---|---|
 | `tests\Unit.CanonicalPrincipal.Tests.ps1` | **59 of 59 green.** This is the acceptance gate for the resolver. On Linux 22 of them fail purely because a SID cannot be constructed there; here there is no such excuse. Confirmed green on 2026-09-15. |
 | `Unit.WinLapsAclOperations`, `Integration.WinLapsDeployment`, `Unit.GpoOperations` | Green. |
-| Total | **2021 of 2053**, with the 32 known failures below. |
+| Total | **2021 of 2053**, with the 32 known failures below and nothing else. Measured 2026-09-15. |
 
 **Known to fail, and not this branch's doing.** All 32 also fail on `origin/main` on the same
 host. They are English-only test fixtures meeting a German Windows host, plus one that reads the
