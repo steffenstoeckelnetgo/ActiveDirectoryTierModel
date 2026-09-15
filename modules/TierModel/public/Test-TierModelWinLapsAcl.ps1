@@ -88,7 +88,10 @@ function Test-TierModelWinLapsAcl {
         try {
             $adDomain = Get-ADDomain -Server $DomainController -ErrorAction Stop
             $netBIOSDomain = $adDomain.NetBIOSName
-            $domainSidValue = ConvertTo-TierModelSidString -InputSid $adDomain.DomainSID -Context "the domain SID of '$DomainController'"
+            # Probed rather than dereferenced: DomainSID can be a SecurityIdentifier, a String
+            # through the WinPSCompat shim, or absent, and Set-StrictMode turns absence into a
+            # terminating error on plain property access.
+            $domainSidValue = Get-TierModelDomainSidValue -Domain $adDomain
         } catch {
             Write-TierModelLog -Level Warning -Message "Cannot resolve NetBIOS domain name" -Data @{
                 Exception = $_.Exception.Message; CorrelationId = $CorrelationId
@@ -179,10 +182,8 @@ function Test-TierModelWinLapsAcl {
             #
             # The sAMAccountName is still carried for the finding text and as the fallback match for
             # a principal that has no resolvable SID.
-            $readPrincipals = @(Resolve-TierModelLapsPrincipal -GroupNames $readGroupNames -DomainController $DomainController)
-            $resetPrincipals = @(Resolve-TierModelLapsPrincipal -GroupNames $resetGroupNames -DomainController $DomainController)
-            $readSamNames = @($readPrincipals | ForEach-Object { $_.Sam })
-            $resetSamNames = @($resetPrincipals | ForEach-Object { $_.Sam })
+            $readPrincipals = @(Resolve-TierModelLapsPrincipal -GroupNames $readGroupNames -DomainController $DomainController -NetBiosDomain $netBIOSDomain)
+            $resetPrincipals = @(Resolve-TierModelLapsPrincipal -GroupNames $resetGroupNames -DomainController $DomainController -NetBiosDomain $netBIOSDomain)
 
             # Check OU exists
             try {
