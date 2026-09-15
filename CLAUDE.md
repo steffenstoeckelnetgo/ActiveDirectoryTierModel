@@ -196,7 +196,22 @@ Two defects fixed that also affect English deployments:
 - Windows LAPS SELF detection and the holder allow-list compared translated names, making the
   delegation non-idempotent and reporting every legitimate administrative holder as drift.
 
-**Not verified yet:** the SID-composition core. See §6.
+Three further fixes came out of actually executing the code rather than reading it:
+
+- The well-known SID table had grown 15 bare built-in aliases the configuration never uses
+  (`Remote Desktop Users`, `Event Log Readers`, …). Those are legal names for a *customer's own
+  domain group*, so listing them would have silently shadowed it. Narrowed to the three the
+  configuration needs; see rule 2.4.
+- `Resolve-TierModelDelegationOuDn` no longer trusts the literal `OU=Domain Controllers` — it
+  uses the configured DN when it resolves and the `wellKnownObject`-backed container when it
+  does not. Neither answer to "is that OU localized" is assumed.
+- `Resolve-TierModelLapsPrincipal` discarded an already-read `sAMAccountName` when the SID
+  normalisation in the same `try` failed, which blocked the entire Windows LAPS deployment.
+
+`optional/Test-TierModelLocalizedDeployment.ps1` is also part of this branch: a read-only
+post-deployment report covering what the product audit does not (§6 item 6).
+
+**Not verified yet:** the SID-composition core. See §6 and `docs/german-lab-runbook.md`.
 
 ---
 
@@ -208,14 +223,24 @@ Ordered. Items 1–3 are the actual acceptance gate.
    are exactly the SID-dependent ones; they cannot pass on Linux and are the proof this change
    needs. Clone, check out the branch, RSAT + GroupPolicy present, `.\tests\Invoke-AllTests.ps1`.
    No harness needed — the backslash paths are correct there.
-2. **Resolve the remaining baseline delta.** Under the Linux harness, 17 tests moved
-   `Passed → Failed` against `origin/main`. Known causes, to be confirmed on Windows:
+   **`docs/german-lab-runbook.md` is the step-by-step version of this**, including what must be
+   green, what is expected to fail, and what to send back.
+2. **Resolve the remaining baseline delta.** Under the Linux harness, **8** tests moved
+   `Passed → Failed` against `origin/main` (down from 17; the nine that cleared all had one
+   cause, the discarded `sAMAccountName` described in §5):
    - `Unit.GpoOperations` ×2 still assert the old "Deny-Apply failure is only a warning"
      contract. They must be rewritten to the new contract deliberately, not quietly.
-   - `Unit.WinLapsAclOperations` / `Integration.WinLapsDeployment` — needs checking whether these
-     are genuine or artifacts of the Linux SID wall.
-   - `Unit.ModuleManifest` "Has current version" returned `$null` under the harness although the
-     manifest parses standalone — **unexplained, must be investigated.**
+     **This is the only remaining piece of real work in this list.**
+   - `Unit.WinLapsAclOperations` ×5 and `Integration.WinLapsDeployment` ×1 — identity
+     comparison, which cannot resolve an identity on Linux at all. Expected to pass on Windows;
+     confirm rather than assume.
+
+   Measured figures, for comparison against a future run: baseline 1680 passed of 1994; HEAD
+   1708 passed of 2053; `Unit.CanonicalPrincipal` 37 of 59 (the 22 are the SID wall).
+
+   Not a regression, and no longer open: `Unit.ModuleManifest` is already only 6 of 63 green on
+   the **baseline**, so the whole file is platform-broken on Linux rather than affected by this
+   change.
 3. **Run PSScriptAnalyzer.** Not obtainable in the Linux container (absent from nuget.org;
    PowerShell Gallery and GitHub releases blocked by the network policy). It is a CI gate, so it
    must run somewhere before merge.
