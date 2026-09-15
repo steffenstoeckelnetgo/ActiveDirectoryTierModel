@@ -159,8 +159,11 @@ Rationale over the translated-config-pack model in `docs/language-support.md`:
 4. **Smaller diff, security-reviewable.** ~15 code sites and one new lookup table versus
    several thousand translated JSON lines that no reviewer can verify by inspection.
 
-The language gate is **narrowed, not deleted**: it stops enforcing English and instead
-detects and records the directory language, warning on languages not yet regression-tested.
+The language gate is **deleted**, not narrowed (decided during implementation review): with
+resolution made name-independent, a supported-language allow-list would only re-introduce a
+gate the mechanism no longer needs. The host and directory language are still detected and
+recorded in `EnvironmentSnapshot` as diagnostics, and nothing blocks. `-AllowUnsupportedLanguage`
+is therefore not needed and was not added.
 
 ## 4. Functional Requirements
 
@@ -177,8 +180,12 @@ detects and records the directory language, warning on languages not yet regress
 - **FR-006** Well-known container DNs MUST come from `Get-ADDomain`, not string literals.
 - **FR-007** `Test-TierModelPrerequisites` MUST pass on a German host OS and a German
   directory, and MUST record the detected host and directory language in
-  `EnvironmentSnapshot`.
-- **FR-008** A `de-DE` ADML set MUST ship with hash manifest parity to `en-US`.
+  `EnvironmentSnapshot`. No language may block the run.
+- **FR-008** Adding a `de-DE` ADML set MUST require no code change, and the manifest MUST be
+  generable from a folder of ADML files. *(The ADML files are Microsoft redistributables; the
+  Microsoft download hosts are unreachable from the build environment, so the files themselves
+  are an operator content drop — see `optional/New-TierModelAdmlManifest.ps1` and
+  `docs/admx-management.md`.)*
 - **FR-009** All emitted timestamps MUST use `InvariantCulture`.
 - **FR-010** No English-language behaviour may regress: the existing suite must stay green
   and coverage at or above the 80% CI gate.

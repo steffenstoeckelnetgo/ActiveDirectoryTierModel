@@ -7,6 +7,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **German (and any localized) Active Directory support.** `Deploy-TierModel` and
+  `Audit-TierModel` now run against a domain installed in any language, from a host
+  installed in any language. The English names in `config/*.json` are treated as
+  canonical identifiers and resolved to well-known SIDs rather than looked up by
+  directory name, so one configuration set works everywhere and keeps working where a
+  built-in group has been renamed. English and German are the regression-tested
+  combinations. See `docs/language-support.md` and
+  `specs/008-german-language-support/`.
+- `Get-TierModelCanonicalPrincipal` / `Resolve-TierModelCanonicalSid` (module-internal):
+  canonical English name to well-known RID, composed against the target domain SID and
+  verified by reading the object back. The read-back keeps forest-root groups
+  unresolvable in a child domain and absent optional groups (Allowed RODC Password
+  Replication Group) resolving to nothing, so callers skip them instead of writing an
+  unresolvable SID into `[Privilege Rights]`.
+- `optional/New-TierModelAdmlManifest.ps1`: generates `config/tiermodel-adml-<lang>.json`
+  with MD5 hashes from a folder of ADML files, so adding a language to the central store
+  is a content drop plus one command. The ADML files themselves are Microsoft
+  redistributables and are not in this repository.
+- `tests/Unit.CanonicalPrincipal.Tests.ps1`: resolution against a German-directory
+  fixture where every English name lookup fails, proving no code path depends on the name.
+
+### Fixed
+- **A failed Deny-Apply GPO ACE no longer passes as success.** `New-TierModelGpo`
+  downgraded the failure to a yellow console warning, so
+  `*- Tier Model Account Restrictions` could deploy without its Domain Controllers
+  protection while the run reported success — a silently weakened tier boundary. The ACE
+  is now built from a SID and a failure fails the GPO action, making the deployment
+  non-convergent. **This is a behaviour change for English deployments too.**
+- Windows LAPS delegation was not idempotent and reported false drift on a localized
+  host. SELF detection and the administrative holder allow-list compared
+  client-translated account names (`NT-AUTORITÄT\SELBST`,
+  `VORDEFINIERT\Administratoren`), so the SELF ACE looked absent on every run and every
+  legitimate holder was flagged. Both now compare SIDs.
+- The Windows LAPS planner blocked the whole deployment with `RequiredGroupNotFound`, and
+  the audit reported the delegation compliant without checking it, on a localized domain:
+  `Get-ADGroup -Filter "Name -eq 'Domain Admins'"` returns an empty result rather than
+  throwing. Planner and audit now share `Resolve-TierModelLapsPrincipal`.
+- The Domain Admins and Enterprise Admins corroboration lookups in
+  `Test-TierModelPrerequisites` resolve by RID 512 / 519 instead of by name; the name
+  lookup failed the entire prerequisite check with "Domain Admin membership required"
+  against a valid administrator on a German domain.
+- `Resolve-ADPrincipalSid` used `-Server $DomainController` without declaring the
+  parameter, working only through PowerShell's dynamic scoping from its one caller.
+- Timestamps are formatted with `InvariantCulture` so log and report filenames and JSON
+  timestamps do not vary with the host's locale.
+
+### Changed
+- The two English-only prerequisite gates (host install language, well-known group names)
+  are removed. The host language, the resolved culture and the canary group names are
+  still recorded in `EnvironmentSnapshot` as diagnostics (`HostOsLanguage`, `AdLanguage`,
+  and the existing `HostOsEnglish` / `AdLanguageEnglish` / `AdLanguageMismatches` keys),
+  but nothing blocks.
+- GPO planners classify well-known containers through
+  `Test-TierModelWellKnownContainer`, which keeps the existing English literal match and
+  additionally compares the container DNs `Get-ADDomain` reports.
+- `docs/language-support.md` rewritten: the English-only policy and the "community
+  language packs" roadmap are replaced by the SID-resolution mechanism and its rationale.
+
 ### Changed
 - Reworded documentation and comment attribution that named individual AI agent
   personas, describing the role or the work instead. One such name appeared in a

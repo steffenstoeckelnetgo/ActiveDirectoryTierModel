@@ -6,6 +6,25 @@
 
 ---
 
+## Implementation status
+
+Phases 1-5 and 7-9 are implemented. Two decisions taken during review differ from the
+design sketch below, and the text of those phases should be read against this table.
+
+| Phase | Status | Deviation |
+|---|---|---|
+| 1 Canonical SID resolution | Done | The forest-root SID is composed against the **target domain** SID rather than looked up separately. RID 519/518 is unallocated in a child domain, so the read-back reproduces the previous "not found" behaviour with no extra directory call and no referral risk. |
+| 2 SID-based ACL comparison | Done | The four `NTAccount` sites in `New-TierModelOuAcl` and the MSA/gMSA/dMSA appliers were **left unchanged**: they operate only on Tier Model-owned group names, which no language localizes. Changing them would be robustness-only churn in untestable code. `Test-TierModelWinLapsDecryptor` likewise, for the same reason. |
+| 3 Deny-Apply ACE | Done | Implemented as "fails the GPO action" (the per-GPO handler records the error, increments `Failed`, clears `Converged`) rather than aborting the run mid-estate. |
+| 4 Well-known containers | Done | `Test-TierModelWellKnownContainer` **keeps** the English literal match and adds the directory-reported DNs, so a directory hiccup degrades to today's behaviour. The `{{DC_OU_DN}}` placeholder and the config changes were **not** made: the literal-plus-directory match covers the code paths, and rewriting config keys is a migration concern for its own change. |
+| 5 Language gate | Done | Gate **removed entirely** (user decision), not narrowed to an allow-list. No `-AllowUnsupportedLanguage` switch. |
+| 6 German ADML content | Partial | `download.microsoft.com` is blocked by this environment's network policy (403 on CONNECT), so the files could not be fetched. Shipped instead: `optional/New-TierModelAdmlManifest.ps1` and the operator procedure in `docs/admx-management.md`. No code change was needed — `-AdmlLanguage` already routes to `config\tiermodel-adml-<lang>.json`. |
+| 7 Invariant timestamps | Done | 14 call sites. |
+| 8 Tests | Done | The gate tests are inverted; `tests/Unit.CanonicalPrincipal.Tests.ps1` is new. **The suite has not been run**: PowerShell is unavailable in this environment and could not be installed. CI on `windows-latest` is the first execution. |
+| 9 Documentation | Done | Plus `ModuleVersion` 2.1.0 → 2.2.0 and the three version assertions that pin it. |
+
+---
+
 ## Phase 1 — Canonical SID resolution (the load-bearing change)
 
 ### 1.1 New lookup table in `modules/TierModel/public/Resolve-TierModelPrincipalSid.ps1`

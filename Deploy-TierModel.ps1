@@ -317,7 +317,7 @@ if ($Logging -and -not $OutputFileBase) {
 # Initialize logging if requested
 $script:LogDirectory = $null
 if ($Logging) {
-    $timestamp = Get-Date -Format 'MMddyy-HHmm'
+    $timestamp = (Get-Date).ToString('MMddyy-HHmm', [System.Globalization.CultureInfo]::InvariantCulture)
     $logFileName = "$OutputFileBase-$timestamp.log"
 
     # Resolve the log DIRECTORY exactly once, then derive both the log file and the Debug\
@@ -441,7 +441,7 @@ function Write-TierModelFailFast {
                 # The PowerShell-version gate fires BEFORE Import-Module, so the logger does not
                 # exist yet. Emit the identical JSON record directly rather than lose the failure.
                 $ffEntry = [PSCustomObject]@{
-                    Timestamp     = (Get-Date -Format 'yyyy-MM-ddTHH:mm:ss.fffZ')
+                    Timestamp     = ((Get-Date).ToString('yyyy-MM-ddTHH:mm:ss.fffZ', [System.Globalization.CultureInfo]::InvariantCulture))
                     Level         = 'Error'
                     Message       = $ffMessage
                     Data          = $ffData
@@ -730,7 +730,7 @@ if ($script:DiagnosticsEnabled) {
 # POC-3: a nested Start-Transcript is harmless, so there is deliberately no "is a transcript
 # already running" pre-check here — an earlier version of this plan had one and it was wrong.
 if ($script:DiagnosticsEnabled -and $EnableVerbose -and $EnableDebug -and $script:DebugFolderPath) {
-    $transcriptStamp = Get-Date -Format 'MMddyy-HHmmss'
+    $transcriptStamp = (Get-Date).ToString('MMddyy-HHmmss', [System.Globalization.CultureInfo]::InvariantCulture)
     $candidateTranscript = Join-Path $script:DebugFolderPath "Deploy-TierModel.transcript.$transcriptStamp.log"
     try {
         Start-Transcript -Path $candidateTranscript -Force -WhatIf:$false -ErrorAction Stop | Out-Null

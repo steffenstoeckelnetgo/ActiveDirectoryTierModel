@@ -220,7 +220,7 @@ function Write-Log {
         [string]$Level = 'Information'
     )
 
-    $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+    $timestamp = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss', [System.Globalization.CultureInfo]::InvariantCulture)
     $logLine   = "$timestamp [$Level] $Message"
 
     if ($script:LogFilePath) {
@@ -248,7 +248,7 @@ function Write-DebugLog {
 
     if (-not $script:DebugFilePath) { return }
 
-    $ts = Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff'
+    $ts = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss.fff', [System.Globalization.CultureInfo]::InvariantCulture)
     $line = "$ts [$($script:CorrelationId)] $Message"
 
     if ($Data -and $Data.Count -gt 0) {
@@ -273,7 +273,7 @@ function Initialize-Logging {
         New-Item -Path $logDir -ItemType Directory -Force -WhatIf:$false | Out-Null
     }
 
-    $timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+    $timestamp = (Get-Date).ToString('yyyyMMdd-HHmmss', [System.Globalization.CultureInfo]::InvariantCulture)
     $script:LogFilePath = Join-Path $logDir "Update-TierModelMembership.$JobId.$timestamp.log"
 
     # Prune logs older than 7 days
@@ -348,12 +348,12 @@ function Initialize-Debug {
     }
 
     # PRE-OPEN: create the debug file BEFORE any AD write
-    $dbgTs = Get-Date -Format 'yyyyMMdd-HHmmss'
+    $dbgTs = (Get-Date).ToString('yyyyMMdd-HHmmss', [System.Globalization.CultureInfo]::InvariantCulture)
     $fileName = "Update-TierModelMembership.debug.$dbgTs.$($script:CorrelationId).log"
     $script:DebugFilePath = Join-Path $debugDir $fileName
 
     try {
-        $header = "# Debug log CorrelationId=$($script:CorrelationId) Created=$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+        $header = "# Debug log CorrelationId=$($script:CorrelationId) Created=$((Get-Date).ToString('yyyy-MM-dd HH:mm:ss', [System.Globalization.CultureInfo]::InvariantCulture))"
         Set-Content -Path $script:DebugFilePath -Value $header -Encoding UTF8 -ErrorAction Stop -WhatIf:$false
     }
     catch {
@@ -2295,7 +2295,7 @@ catch {
 
     $errMsg = "FATAL ERROR: $($_.Exception.Message)"
     if ($script:LogFilePath) {
-        $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+        $timestamp = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss', [System.Globalization.CultureInfo]::InvariantCulture)
         Add-Content -Path $script:LogFilePath -Value "$timestamp [Error] $errMsg" -Encoding UTF8 -ErrorAction SilentlyContinue -WhatIf:$false
     }
     Write-DebugLog -Message 'FATAL ERROR' -Data @{
