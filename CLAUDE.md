@@ -227,7 +227,13 @@ Ordered. Items 1–3 are the actual acceptance gate.
    `[Privilege Rights]`.
 6. **German lab acceptance.** No mock replaces this: deploy → second deploy (idempotency, which
    is exactly the LAPS SELF bug) → audit reporting zero drift → verify the Deny ACE on the GPC
-   against `Domänencontroller`. Use `tests/Manual.Integration.Tests.xlsx`.
+   against `Domänencontroller`. Use `tests/Manual.Integration.Tests.xlsx`, and run
+   `optional/Test-TierModelLocalizedDeployment.ps1 -PreferredDc <dc> -IncludeWinLaps -IncludeAuthSilos -IncludeAudit`.
+   That script is read-only and writes one JSON report covering what the product audit does not:
+   the directory's language, every configured principal with the SID and the *directory* name it
+   resolved to, whether the Deny-Apply ACE is actually on the GPC, and the `[Privilege Rights]`
+   SID sets from SYSVOL. Running it on an English domain as well and diffing the
+   `PrivilegeRights` sections is the parity proof.
 7. **German ADML content.** `optional/New-TierModelAdmlManifest.ps1` and the procedure in
    `docs/admx-management.md` are ready; the `.adml` files are Microsoft redistributables and must
    be supplied by the operator. `download.microsoft.com` is blocked from the build environment
