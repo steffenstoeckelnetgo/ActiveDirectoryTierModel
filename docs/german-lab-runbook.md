@@ -145,7 +145,12 @@ If anything **else** fails, capture it — that is a genuine finding.
 pwsh -NonInteractive -File .\tests\Invoke-AllTests.ps1 -FailedOnly   # failures only
 ```
 
-### A2 — Lint (a CI gate)
+### A2 — Lint (two CI gates, not one)
+
+`.github/workflows/ci.yml` runs PSScriptAnalyzer **twice**, and both have to pass. Run from the
+repository root, or the relative paths below analyse nothing.
+
+**A2a — the main gate.** Fails on *any* finding. `optional/` is deliberately not linted.
 
 ```powershell
 $excludeRules = @(
@@ -159,11 +164,42 @@ $results = @()
 foreach ($t in @('modules/TierModel','Deploy-TierModel.ps1','Audit-TierModel.ps1')) {
   $results += Invoke-ScriptAnalyzer -Path $t -Recurse -Severity Error,Warning,Information -ExcludeRule $excludeRules
 }
+"Findings: $($results.Count)"      # CI exits with this count; 0 is the pass
 $results | Format-Table Severity, RuleName, ScriptName, Line, Message -AutoSize
 $results | Export-Csv scriptanalyzer-results.csv -NoTypeInformation
 ```
 
-CI fails on **any** finding. `optional/` is deliberately not linted.
+**An empty `scriptanalyzer-results.csv` is the pass** — zero findings means an empty array means
+an empty file. But an empty result and *"the analyzer never read anything"* look identical, so
+confirm the scan actually happened. Two of the excluded rules match this repository in bulk
+(`PSAvoidUsingWriteHost`: ~1150 `Write-Host` calls in the linted scope; `PSAvoidTrailingWhitespace`:
+~2000 lines), so the same scan **without** `-ExcludeRule` must return thousands:
+
+```powershell
+Get-Module PSScriptAnalyzer -ListAvailable | Select-Object Name, Version
+(Invoke-ScriptAnalyzer -Path modules/TierModel -Recurse -Severity Error,Warning,Information |
+    Measure-Object).Count                     # expect several thousand, NOT 0
+```
+
+If that comes back 0 too, the module or the working directory is wrong and the empty CSV means
+nothing.
+
+**A2b — the security gate.** A separate CI step over `modules/TierModel` with an explicit rule
+list. This one fails the build only on findings of severity **Error**; warnings are tolerated
+there.
+
+```powershell
+$sec = Invoke-ScriptAnalyzer -Path "modules/TierModel" -Recurse -IncludeRule `
+  PSAvoidUsingPlainTextForPassword, PSAvoidUsingUserNameAndPasswordParams, `
+  PSAvoidUsingComputerNameHardcoded, PSUsePSCredentialType, PSAvoidGlobalVars, `
+  PSUseShouldProcessForStateChangingFunctions
+"Security findings: $($sec.Count), of which Error: $(@($sec | Where-Object Severity -eq 'Error').Count)"
+$sec | Format-Table Severity, RuleName, ScriptName, Line -AutoSize
+$sec | Export-Csv security-analysis.csv -NoTypeInformation
+```
+
+Note that `PSUseShouldProcessForStateChangingFunctions` is *excluded* from A2a but *included*
+here — it can still report, and at Warning severity it does not fail the build.
 
 ### A3 — Record the directory's language
 
@@ -288,7 +324,7 @@ thing no unit test can establish.
 ## What to send back
 
 1. `.\tests\Invoke-AllTests.ps1` output — totals plus the failure list.
-2. `scriptanalyzer-results.csv`.
+2. `scriptanalyzer-results.csv` and `security-analysis.csv`, plus the two counts A2 prints.
 3. Phase B console output (planning run).
 4. The deploy log / report from Phase C.
 5. Phase D output — the action count of the second run.
