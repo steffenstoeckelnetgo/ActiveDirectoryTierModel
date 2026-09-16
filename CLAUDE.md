@@ -537,8 +537,12 @@ Ordered. Items 1–3 are the actual acceptance gate.
      `IIS APPPOOL\*`, `CLIUSR` — and every one of them is a configured
      `literalStrings` entry in `config/tiermodel-gpos.json` (`:715`, `:757`, `:3979` …). They
      have no domain SID by construction; `secedit` resolves them on the target machine. The
-     report flags them as `Problems` because its rule is "everything should be a SID"; that
-     rule does not yet know about `literalStrings`.
+     report flagged all 140 as `Problems` because its rule was "everything should be a SID".
+     **Fixed:** the rule now reads the configured `literalStrings` and reports only entries
+     nobody declared, so the next run shows 0 problems and a stray plain name stands out.
+     Measured against the lab data: the configuration declares exactly 33 `literalStrings`, and
+     all 33 distinct non-SID principals in that SYSVOL match one — nothing left over.
+     `tests/Unit.LocalizedVerification.Tests.ps1` pins the count.
    - Third independent confirmation that `DomainControllersContainer` is
      `OU=Domain Controllers,DC=int,DC=promiseIT,DC=de` — **not** localized on this domain.
 

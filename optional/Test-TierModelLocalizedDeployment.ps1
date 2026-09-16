@@ -294,7 +294,50 @@ function Get-ConfiguredPrincipalName {
     }
 }
 
+function Get-ConfiguredLiteralString {
+    <#
+        Collects every 'literalStrings' value the configuration carries.
+
+        These are the deliberate exception to "every principal resolves to a SID": machine-LOCAL
+        accounts - NT SERVICE\*, IIS APPPOOL\*, CLIUSR - which have no domain SID at all and
+        which secedit resolves on the target machine. New-TierModelGptTmplContent writes them
+        through verbatim, so seeing them in [Privilege Rights] is the intended outcome, not drift.
+
+        The walker above deliberately SKIPS this key because these are not resolvable principals;
+        this one collects them for exactly the opposite reason - to tell an expected plain name in
+        SYSVOL apart from one that should have been a SID.
+    #>
+    param(
+        [Parameter(Mandatory)]
+        [AllowNull()]
+        $Node,
+
+        [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
+        [System.Collections.Generic.HashSet[string]]$Sink
+    )
+
+    if ($Node -is [System.Collections.IEnumerable] -and $Node -isnot [string]) {
+        foreach ($item in $Node) { Get-ConfiguredLiteralString -Node $item -Sink $Sink }
+        return
+    }
+    if ($Node -isnot [psobject]) { return }
+
+    foreach ($property in $Node.PSObject.Properties) {
+        if ($null -eq $property.Value) { continue }
+        if ($property.Name -eq 'literalStrings') {
+            foreach ($entry in @($property.Value)) {
+                if ($entry -is [string] -and -not [string]::IsNullOrWhiteSpace($entry)) { $null = $Sink.Add($entry.Trim()) }
+            }
+        }
+        else {
+            Get-ConfiguredLiteralString -Node $property.Value -Sink $Sink
+        }
+    }
+}
+
 $principalNames = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+$literalStrings = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
 $configFiles = @('tiermodel-gpos.json', 'tiermodel-authsilos.json')
 if ($IncludeWinLaps) { $configFiles += 'tiermodel-winlaps.json' }
 
@@ -305,7 +348,9 @@ foreach ($configFile in $configFiles) {
         continue
     }
     try {
-        Get-ConfiguredPrincipalName -Node (Get-Content $path -Raw | ConvertFrom-Json) -Sink $principalNames
+        $configNode = Get-Content $path -Raw | ConvertFrom-Json
+        Get-ConfiguredPrincipalName  -Node $configNode -Sink $principalNames
+        Get-ConfiguredLiteralString  -Node $configNode -Sink $literalStrings
     }
     catch {
         Add-Problem -Area 'Config' -Subject $configFile -Message $_.Exception.Message
@@ -498,21 +543,29 @@ try {
         }
 
         if ($rights.Count -gt 0) {
-            # Names rather than SIDs here would mean the deployment wrote a localizable value into
-            # security policy; every entry is expected to start with '*S-1-'.
+            # A name rather than a SID here would mean the deployment wrote a LOCALIZABLE value
+            # into security policy - the whole failure mode this branch exists to prevent.
+            #
+            # With one designed exception: the machine-local accounts the configuration lists as
+            # literalStrings (NT SERVICE\*, IIS APPPOOL\*, CLIUSR) have no domain SID and are
+            # resolved by secedit on the target. Reporting those as problems buries the one
+            # finding that would matter - a plain name that nobody configured - under 140 entries
+            # of noise, which is exactly what the 2026-09-16 lab report did.
             $nonSid = @()
             foreach ($key in $rights.Keys) {
                 $nonSid += @($rights[$key] | Where-Object { $_ -notmatch '^\*S-1-' })
             }
-            if ($nonSid.Count -gt 0) {
+            $unexpectedNonSid = @($nonSid | Where-Object { -not $literalStrings.Contains($_.TrimStart('*')) })
+            if ($unexpectedNonSid.Count -gt 0) {
                 Add-Problem -Area 'PrivilegeRights' -Subject $gpo.DisplayName `
-                    -Message "non-SID principal(s) in [Privilege Rights]: $($nonSid -join ', ')"
+                    -Message "non-SID principal(s) in [Privilege Rights] that are not configured as literalStrings: $(($unexpectedNonSid | Sort-Object -Unique) -join ', ')"
             }
             $privilegeRights += [ordered]@{
-                GpoDisplayName = [string]$gpo.DisplayName
-                GpoId          = [string]$gpo.Id
-                Rights         = $rights
-                NonSidEntries  = $nonSid
+                GpoDisplayName          = [string]$gpo.DisplayName
+                GpoId                   = [string]$gpo.Id
+                Rights                  = $rights
+                NonSidEntries           = $nonSid
+                UnexpectedNonSidEntries = $unexpectedNonSid
             }
         }
     }

@@ -103,6 +103,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ActualName: null`, which is what the auth silo gate logged on the German lab domain,
   because the GPO phase warms the cache long before it runs. Diagnostic only; the SID was
   always correct.
+- `optional/Test-TierModelLocalizedDeployment.ps1` reported every machine-local principal in
+  `[Privilege Rights]` as a problem. `NT SERVICE\*`, `IIS APPPOOL\*` and `CLIUSR` have no
+  domain SID at all — `secedit` resolves them on the target machine — and the configuration
+  declares each one as a `literalStrings` entry. The German lab report raised 6 problems
+  covering 140 such entries, which buries the one finding that would matter: a plain,
+  localizable name nobody configured. The rule now exempts what the configuration declares and
+  reports only the rest.
 
 ### Changed
 - The two English-only prerequisite gates (host install language, well-known group names)
