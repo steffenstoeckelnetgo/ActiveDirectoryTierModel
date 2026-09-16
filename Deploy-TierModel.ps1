@@ -2778,7 +2778,6 @@ if ($FullDeployment) {
         $totalSkipped = 0
         $totalErrors = 0
         $totalDuration = 0
-        $overallConverged = $true
         
         foreach ($result in $allResults) {
             if ($result) {
@@ -2814,10 +2813,6 @@ if ($FullDeployment) {
                 if ($result.PSObject.Properties.Name -contains 'DurationMs' -and $result.DurationMs) {
                     $totalDuration += $result.DurationMs
                 }
-                
-                if ($result.PSObject.Properties.Name -contains 'Converged' -and -not $result.Converged) {
-                    $overallConverged = $false
-                }
             }
         }
         
@@ -2827,8 +2822,18 @@ if ($FullDeployment) {
         # entire silo phase had been skipped (German lab run, 2026-09-16).
         if ((Get-Variable authSiloPrereqFailureCount -ErrorAction SilentlyContinue) -and $authSiloPrereqFailureCount -gt 0) {
             $totalErrors += $authSiloPrereqFailureCount
-            $overallConverged = $false
         }
+
+        # Converged is derived from the totals above, NOT from the results' own Converged flags.
+        #
+        # Those flags carry two different meanings across the module: New-TierModelOu and
+        # New-TierModelGroup set them from "nothing was applied" (idempotency), every other
+        # executor from "nothing failed" (success). AND-ing them therefore reported
+        # "Converged: True" for a run that had just created 146 GPOs, 60 ADMX files and 17 LAPS
+        # ACEs, as long as no OU or group changed - which would hide a permanently
+        # non-idempotent phase, the very defect class constitution principle III exists to
+        # surface. The totals have one meaning, so the summary reads them instead.
+        $overallConverged = ($totalApplied -eq 0 -and $totalErrors -eq 0)
 
         # Display consolidated results
         Write-Host "Applied: $totalApplied" -ForegroundColor Green
@@ -3309,7 +3314,6 @@ if ($activeScopeCount -eq 0 -and $activeIncludeCount -gt 0) {
     $standaloneTotalSkipped = 0
     $standaloneTotalErrors = 0
     $standaloneTotalDuration = 0
-    $standaloneConverged = $true
     $standaloneDeploymentPlan = @{
         TotalActions = 0
         CreateCount = 0
@@ -3341,7 +3345,6 @@ if ($activeScopeCount -eq 0 -and $activeIncludeCount -gt 0) {
                     $standaloneTotalApplied += if ($msaResult.Applied) { @($msaResult.Applied).Count } else { 0 }
                     $standaloneTotalErrors += if ($msaResult.Errors) { @($msaResult.Errors).Count } else { 0 }
                     $standaloneTotalDuration += if ($msaResult.DurationMs) { $msaResult.DurationMs } else { 0 }
-                    if ($msaResult.PSObject.Properties.Name -contains 'Converged' -and -not $msaResult.Converged) { $standaloneConverged = $false }
                 }
             } else {
                 Write-Host "  ✅ MSA ACL delegations already up to date" -ForegroundColor Green
@@ -3369,7 +3372,6 @@ if ($activeScopeCount -eq 0 -and $activeIncludeCount -gt 0) {
                     $standaloneTotalApplied += if ($gmsaResult.Applied) { @($gmsaResult.Applied).Count } else { 0 }
                     $standaloneTotalErrors += if ($gmsaResult.Errors) { @($gmsaResult.Errors).Count } else { 0 }
                     $standaloneTotalDuration += if ($gmsaResult.DurationMs) { $gmsaResult.DurationMs } else { 0 }
-                    if ($gmsaResult.PSObject.Properties.Name -contains 'Converged' -and -not $gmsaResult.Converged) { $standaloneConverged = $false }
                 }
             } else {
                 Write-Host "  ✅ gMSA ACL delegations already up to date" -ForegroundColor Green
@@ -3397,7 +3399,6 @@ if ($activeScopeCount -eq 0 -and $activeIncludeCount -gt 0) {
                     $standaloneTotalApplied += if ($dmsaResult.Applied) { @($dmsaResult.Applied).Count } else { 0 }
                     $standaloneTotalErrors += if ($dmsaResult.Errors) { @($dmsaResult.Errors).Count } else { 0 }
                     $standaloneTotalDuration += if ($dmsaResult.DurationMs) { $dmsaResult.DurationMs } else { 0 }
-                    if ($dmsaResult.PSObject.Properties.Name -contains 'Converged' -and -not $dmsaResult.Converged) { $standaloneConverged = $false }
                 }
             } else {
                 Write-Host "  ✅ dMSA ACL delegations already up to date" -ForegroundColor Green
@@ -3425,7 +3426,6 @@ if ($activeScopeCount -eq 0 -and $activeIncludeCount -gt 0) {
                     $standaloneTotalApplied += if ($winLapsResult.Applied) { @($winLapsResult.Applied).Count } else { 0 }
                     $standaloneTotalErrors += if ($winLapsResult.Errors) { @($winLapsResult.Errors).Count } else { 0 }
                     $standaloneTotalDuration += if ($winLapsResult.DurationMs) { $winLapsResult.DurationMs } else { 0 }
-                    if ($winLapsResult.PSObject.Properties.Name -contains 'Converged' -and -not $winLapsResult.Converged) { $standaloneConverged = $false }
                 }
             } else {
                 Write-Host "  ✅ Windows LAPS ACL delegations already up to date" -ForegroundColor Green
@@ -3453,7 +3453,6 @@ if ($activeScopeCount -eq 0 -and $activeIncludeCount -gt 0) {
                     $standaloneTotalApplied += if ($auditResult.Applied) { @($auditResult.Applied).Count } else { 0 }
                     $standaloneTotalErrors += if ($auditResult.Errors) { @($auditResult.Errors).Count } else { 0 }
                     $standaloneTotalDuration += if ($auditResult.DurationMs) { $auditResult.DurationMs } else { 0 }
-                    if ($auditResult.PSObject.Properties.Name -contains 'Converged' -and -not $auditResult.Converged) { $standaloneConverged = $false }
                 }
             } else {
                 Write-Host "  ✅ Domain audit rule already up to date" -ForegroundColor Green
@@ -3491,7 +3490,6 @@ if ($activeScopeCount -eq 0 -and $activeIncludeCount -gt 0) {
                         $standaloneTotalApplied += if ($authPolicyStandaloneResult.Applied) { @($authPolicyStandaloneResult.Applied).Count } else { 0 }
                         $standaloneTotalErrors  += if ($authPolicyStandaloneResult.Errors)  { @($authPolicyStandaloneResult.Errors).Count  } else { 0 }
                         $standaloneTotalDuration += if ($authPolicyStandaloneResult.DurationMs) { $authPolicyStandaloneResult.DurationMs } else { 0 }
-                        if ($authPolicyStandaloneResult.PSObject.Properties.Name -contains 'Converged' -and -not $authPolicyStandaloneResult.Converged) { $standaloneConverged = $false }
                     }
                 }
             }
@@ -3518,7 +3516,6 @@ if ($activeScopeCount -eq 0 -and $activeIncludeCount -gt 0) {
                             $standaloneTotalApplied += if ($authSiloStandaloneResult.Applied) { @($authSiloStandaloneResult.Applied).Count } else { 0 }
                             $standaloneTotalErrors  += if ($authSiloStandaloneResult.Errors)  { @($authSiloStandaloneResult.Errors).Count  } else { 0 }
                             $standaloneTotalDuration += if ($authSiloStandaloneResult.DurationMs) { $authSiloStandaloneResult.DurationMs } else { 0 }
-                            if ($authSiloStandaloneResult.PSObject.Properties.Name -contains 'Converged' -and -not $authSiloStandaloneResult.Converged) { $standaloneConverged = $false }
                         }
                     }
 
@@ -3542,7 +3539,6 @@ if ($activeScopeCount -eq 0 -and $activeIncludeCount -gt 0) {
                             $standaloneTotalApplied += if ($authMembershipStandaloneResult.Applied) { @($authMembershipStandaloneResult.Applied).Count } else { 0 }
                             $standaloneTotalErrors  += if ($authMembershipStandaloneResult.Errors)  { @($authMembershipStandaloneResult.Errors).Count  } else { 0 }
                             $standaloneTotalDuration += if ($authMembershipStandaloneResult.DurationMs) { $authMembershipStandaloneResult.DurationMs } else { 0 }
-                            if ($authMembershipStandaloneResult.PSObject.Properties.Name -contains 'Converged' -and -not $authMembershipStandaloneResult.Converged) { $standaloneConverged = $false }
                         } elseif ($authPolicyStandalonePlan.Summary.ToCreate -eq 0 -and $authSiloStandalonePlan.Summary.ToCreate -eq 0) {
                             Write-Host "  ✅ Already deployed — nothing to create" -ForegroundColor Green
                         }
@@ -3553,6 +3549,12 @@ if ($activeScopeCount -eq 0 -and $activeIncludeCount -gt 0) {
     }
     
     if ($ConfirmApply) {
+        # Same derivation as the FullDeployment summary above, and for the same reason: every
+        # executor reachable from here reports Converged as "nothing failed", so the AND of
+        # those flags printed "Converged: True" after applying, for example, 17 Windows LAPS
+        # ACEs. The totals are unambiguous.
+        $standaloneConverged = ($standaloneTotalApplied -eq 0 -and $standaloneTotalErrors -eq 0)
+
         Write-Host "`n=== Deployment Results ===" -ForegroundColor Blue
         Write-Host "Applied: $standaloneTotalApplied" -ForegroundColor Green
         Write-Host "Skipped: $standaloneTotalSkipped" -ForegroundColor Yellow

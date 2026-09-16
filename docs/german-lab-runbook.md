@@ -292,6 +292,13 @@ deployment when any configure action fails, and phase 4 (linking) comes after ph
 fail-fast is deliberate and was left in place. The practical consequence: as long as `Errors` is
 not 0, assume no GPO is linked, and do not read anything into the OU structure looking complete.
 
+**`Converged: False` on a first run is expected, and is not an error.** Since the green-field
+run of 2026-09-16 both summaries derive the flag from their own totals — `applied = 0 and
+errors = 0` — instead of AND-ing each executor's own flag, because those flags mean "nothing
+was applied" in two places and "nothing failed" in the other twelve (CLAUDE.md §4 trap 9). A
+deployment that writes anything therefore reads `Converged: False` next to `Errors: 0`. The line
+to judge is `Errors`; `Converged` is the question Phase D answers.
+
 **A skipped auth silo phase is now an error.** If `Test-TierModelAuthSiloPrerequisite` fails,
 the run prints the missing groups in red and skips the whole silo phase — and the summary counts
 that skip, so `Errors` is non-zero and `Converged` is `False`. It used to end
@@ -382,6 +389,12 @@ points at a specific mechanism:
 
 The console summary (`Applied / Skipped / Errors / Converged`) is **not** in the JSON log — read
 it off the console.
+
+**Result on a green-field `int.promiseIT.de`, 2026-09-16 13:59: passed.** The domain had been
+rebuilt from scratch and Phase C had just applied 689 actions with `Errors: 0`; the immediate
+repeat printed `No actions required - all components are up to date.` →
+`Applied: 0 / Skipped: 0 / Errors: 0 / Converged: True`. That is the strongest form of this
+check: every object in the directory had been created by the run before it.
 
 **Result on `int.promiseIT.de`, 2026-09-16 11:00: passed.** Every planner reported zero, so the
 run never entered an execution phase and printed `Applied: 0 / Skipped: 0 / Errors: 0 /

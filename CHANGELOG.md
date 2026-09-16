@@ -30,6 +30,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fixture where every English name lookup fails, proving no code path depends on the name.
 
 ### Fixed
+- **`Converged` in the deployment summary now means "nothing changed", not "nothing
+  failed".** Both consolidated summaries AND-ed the executors' own `Converged` flags, and
+  those flags carry two different meanings: `New-TierModelOu` and `New-TierModelGroup`
+  compute them from "nothing was applied", every other executor from "nothing failed". A
+  run that created 146 GPOs, 60 ADMX files and 17 Windows LAPS ACEs therefore printed
+  `Converged: True` whenever no OU and no group changed — hiding exactly the kind of
+  permanently non-idempotent phase that constitution principle III exists to surface. Both
+  summaries now derive the flag from the totals they already compute
+  (`applied -eq 0 -and errors -eq 0`). Stricter, never laxer: no run that previously read
+  `False` reads `True` now.
+- `New-TierModelGroup` reported `Converged = true` for a group phase in which every create
+  failed and nothing was applied — its flag ignored the error count, unlike
+  `New-TierModelOu`.
 - **A failed Deny-Apply GPO ACE no longer passes as success.** `New-TierModelGpo`
   downgraded the failure to a yellow console warning, so
   `*- Tier Model Account Restrictions` could deploy without its Domain Controllers

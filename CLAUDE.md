@@ -182,6 +182,14 @@ Run: `.\tests\Invoke-AllTests.ps1` (`-TestType Unit|Integration`, `-FailedOnly`,
    from the compatibility shim cannot fake membership. On a host where the session really *is* a
    Domain Admin, the test *"… report not-admin"* therefore fails and nothing in the test can
    prevent it. Expected; CI does not run as a Domain Admin.
+9. **`Converged` means two different things across the module, and the summaries no longer
+   mix them.** `New-TierModelOu.ps1:502` and `New-TierModelGroup.ps1:206` compute it from
+   *"nothing was applied"* (idempotency); the other ~12 executors set `$true` and flip it only
+   on failure (*"nothing failed"*). Both consolidated summaries in `Deploy-TierModel.ps1` now
+   derive the flag from their own totals instead of AND-ing the results', so a run that applies
+   anything reports `Converged: False` — which is what the green-field lab run of 2026-09-16
+   shows next to `Errors: 0`. The per-executor flags are unchanged and still carry their own
+   meaning; when you read one, check which of the two you are looking at.
 
 ### Running the suite on Linux
 
@@ -333,6 +341,35 @@ cache long before the gate runs. It is carried through the cache now.
 does not have **throws** instead of returning `$null`, and the `Get-WellKnownSid` entries
 legitimately have none. Use `ContainsKey`.
 
+### The one thing the green-field run exposed: `Converged` mixed two meanings
+
+The verification run on a **freshly built** `int.promiseIT.de` (2026-09-16, §6 item 1) ended
+`Applied: 689, Errors: 0, Converged: False`. Counted out of `DE-neu-C-091626-1349.log`, exactly
+two results reported `Converged: false`, both with `ErrorCount: 0` — `OuCreateComplete`
+(`AppliedCount: 31`) and `GroupCreateComplete` (`AppliedCount: 29`). No third.
+
+For that run the verdict was right — something *was* changed — but only by accident. The
+summaries AND-ed flags that mean different things (§4 trap 9), so the strictest executor that
+happened to run decided the answer. A run that touches only GPOs, ADMX, MSA/gMSA/dMSA, Windows
+LAPS or the silos would have printed `Converged: True` after writing hundreds of objects, and a
+permanently non-idempotent GPO import — the defect class fixed above in `Get-TierModelGpo` —
+would never have shown up in the console summary. Constitution III measures convergence in
+changes, so both summaries (`Deploy-TierModel.ps1:2836` and `:3556`) now derive it from the
+totals they already compute: `applied -eq 0 -and errors -eq 0`. Strictly a tightening — no run
+that read `False` before reads `True` now.
+
+Alongside it, `New-TierModelGroup.ps1:206` gained the error term it was missing: a group phase
+in which every create failed and nothing was applied reported `Converged = true`.
+`New-TierModelOu.ps1:502` always counted errors too.
+
+`Integration.Deploy.Tests.ps1` changed one expectation for this deliberately — the case that
+asserted `Converged: True` after applying now asserts `False`, with a `NOTE:` block above it in
+the style of the `Unit.GpoOperations` rewrite, so nobody relaxes it back by accident.
+
+*Not part of this change, found while writing the tests:* `New-TierModelGroup` with an **empty**
+plan raises `GroupApplyFailed` — `$Plan.Actions | Where-Object` collapses to `$null` and
+`.Count` on it throws under `Set-StrictMode`. Pre-existing, its own concern, not touched here.
+
 **The SID-composition core is verified.** `tests/Unit.CanonicalPrincipal.Tests.ps1` ran
 **59 of 59 green on a German Windows host against a German directory** — the 22 tests that
 cannot even execute on Linux are precisely the ones that carry this proof. What remains
@@ -351,6 +388,28 @@ Ordered. Items 1–3 are the actual acceptance gate.
    pre-existing ones listed below. `tests/Unit.CanonicalPrincipal.Tests.ps1` was
    **59 of 59 green** both times — that file is the acceptance gate for the resolver and it is
    met. `docs/german-lab-runbook.md` Phase A is the repeatable form of this run.
+
+   **Third run: a green-field domain, 2026-09-16 (commit `5ebe784`).** `int.promiseIT.de` was
+   rebuilt from scratch and the whole runbook executed against it, which is the evidence the
+   two earlier runs could not give — they ran on a directory this branch had already touched.
+   Suite `pwsh -NonInteractive`: **2056 passed of 2088**, and the 32 failures are the table in
+   item 2 line for line. `tests/Unit.LocalizedVerification.Tests.ps1` green (974 ms).
+
+   | Phase | Measured |
+   |---|---|
+   | B plan | `Action count: 719` |
+   | **C deploy** | **`Applied: 689, Skipped: 0, Errors: 0, 6m 11s`** — 31 OUs, 29 groups, 3 users, 105 OU ACLs, 146 GPOs created + 123 imported + 23 configured + **131 links**, 60 ADMX/ADML (central store created), MSA/gMSA/dMSA 4 each, 17 LAPS, 4 policies + 4 silos, `DC1$` enrolled. Deny-Apply ACEs logged with `…-516` / `…-521`. `Converged: False` — see §5, it means "this run changed the directory". |
+   | **D idempotency** | `No actions required` → `Applied: 0, Errors: 0, Converged: True` |
+   | **E audit** | `TotalChecked: 433, Missing 0, Mismatched 0, Unverified 0, Drift 0, Errors 0, 100 %` — OU 31, canonical ACL 32, groups 29, users 3, OU ACLs 105, GPOs 146, ADMX 60, MSA/gMSA/dMSA 2 each, WinLaps ACL 7 + decryptor 6, policies 4, silos 4 |
+   | **E report** | `directory language: localized`, `56 principals, 0 unresolved, 42 carrying a different directory name`, `2 ACE check(s), 0 missing`, 29 GPOs with `[Privilege Rights]`, **`No problems found.`** |
+
+   `689` reconciles exactly: 31 + 29 + 3 + 105 + 423 + 60 + 4 + 4 + 4 + 17 + 4 + 4 + 1.
+   The gap to the plan's 719 is two planners that legitimately re-plan once their prerequisites
+   exist — GPO `442 → 423` and Windows LAPS `25 → 17`, both logged, the latter after seven
+   `LAPS GPO not present during FD planning (expected; created by GPO phase)` entries — plus the
+   silo membership, which `Deploy-TierModel.ps1:2477` counts only in plan mode. The exact split
+   across those three is not derivable from the uploaded logs, because the plan phase records
+   the GPO sub-counts only as the sum 442.
 2. **The 41 failures, classified.** Eight belonged to this branch and are fixed (§5). The
    remaining **32 are pre-existing** — they fail on `origin/main` on the same host, they live in
    files this branch does not touch, and their causes are the host's language and the session's

@@ -383,6 +383,33 @@ Describe "Group Operations" -Tag "Unit", "Group", "Phase3" {
             $result.Errors | Should -Not -BeNullOrEmpty
             $result.Errors.Count | Should -BeGreaterThan 0
         }
+
+        It "Should report Converged false when every create failed and nothing was applied" {
+            # Converged means "the directory already matched", not "no exception escaped". The
+            # flag was computed from $applied.Count alone, so a group phase that failed all of
+            # its creates reported a converged run. New-TierModelOu always counted errors too.
+            Mock New-ADGroup -ModuleName TierModel {
+                throw "Access denied"
+            }
+
+            $result = New-TierModelGroup -Plan $script:TestPlan -DomainController $script:TestDC
+
+            $result.Applied.Count | Should -Be 0
+            $result.Errors.Count  | Should -Be 1
+            $result.Converged     | Should -BeFalse
+        }
+
+        It "Should report Converged true when nothing was applied and nothing failed" {
+            # Anti-vacuity for the case above: the flag is not simply always false now. -WhatIf
+            # is the reachable no-change path; an empty plan is not usable here, because
+            # `$Plan.Actions | Where-Object` collapses to $null and reading .Count on it throws
+            # under Set-StrictMode - a separate, pre-existing defect on that path.
+            $result = New-TierModelGroup -Plan $script:TestPlan -DomainController $script:TestDC -WhatIf
+
+            $result.Applied.Count | Should -Be 0
+            $result.Errors.Count  | Should -Be 0
+            $result.Converged     | Should -BeTrue
+        }
         
         It "Should include duration in result" {
             $result = New-TierModelGroup -Plan $script:TestPlan -DomainController $script:TestDC
