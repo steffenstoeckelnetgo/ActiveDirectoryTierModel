@@ -128,6 +128,100 @@ keeps **English** Active Directory names.
 All of them resolve the same way now: by SID. The list matters only for knowing what
 `AdLanguage: localized` will look like in a report.
 
+## Which names are localized — and which are not
+
+This is documented Windows behaviour, not something a deployment has to discover. Two
+sentences from Microsoft's own documentation carry the whole design:
+
+> Well-known SIDs have values that remain constant across all operating systems. […] They're
+> created when the operating system or domain is installed.
+> — [Security identifiers (AD DS)](https://learn.microsoft.com/windows-server/identity/ad-ds/manage/understand-security-identifiers)
+
+> Because the names of well-known SIDs can vary, you should use the functions to build the SID
+> from predefined constants rather than using the name of the well-known SID. For example, the
+> U.S. English version of the Windows operating system has a well-known SID named
+> `BUILTIN\Administrators` that might have a different name on international versions of the
+> system.
+> — [Security Identifiers (Win32)](https://learn.microsoft.com/windows/win32/secauthz/security-identifiers)
+
+**The SID is invariant, the name is not, and the name is fixed at install time** — of the
+operating system for machine-local principals, of the *domain* for domain principals. That is
+why a domain installed from a German first domain controller serves `Domänen-Admins` forever and
+cannot be switched afterwards, and why this project treats the English names in `config/*.json`
+as identifiers rather than as directory names.
+
+The mechanics are spelled out for one account in particular:
+
+> While the security subsystem localizes this account name, the SCM does not support localized
+> names. Therefore, you will receive a localized name for this account from the
+> `LookupAccountSid` function, but the name of the account must be `NT AUTHORITY\LocalService`
+> when you call `CreateService` or `ChangeServiceConfig`, regardless of the locale, or
+> unexpected results can occur.
+> — [LocalService Account](https://learn.microsoft.com/windows/win32/services/localservice-account)
+
+Three things follow: the LSA *does* return localized names for SID→name; some interfaces
+nevertheless demand the invariant English form; and Microsoft documents localization where it
+exists.
+
+### The classes this project touches
+
+| Class | Example | SID | Name localized | Resolved where |
+|---|---|---|---|---|
+| BUILTIN aliases | `Administrators` | `S-1-5-32-544` | **yes** — `VORDEFINIERT\Administratoren` | on the DC, at deploy time |
+| NT AUTHORITY principals | `SELF`, `SYSTEM` | `S-1-5-10`, `S-1-5-18` | **yes** — `NT-AUTORITÄT\SELBST` | on the DC, at deploy time |
+| Domain built-ins | `Domain Admins` | `<domainSID>-512` | **yes** — `Domänen-Admins` | on the DC, at deploy time |
+| Tier Model's own groups | `Tier0Admins` | `<domainSID>-11xx` | no — the Tier Model creates them | on the DC, at deploy time |
+| Virtual service accounts | `NT SERVICE\himds` | `S-1-5-80-<SHA1(service name)>` | see below | **on the target machine, at policy application** |
+| Application pool identities | `IIS APPPOOL\DefaultAppPool` | `S-1-5-82-<SHA1(pool name)>` | see below | **on the target machine** |
+| Cluster local account | `CLIUSR` | machine-local | no | **on the target machine** |
+
+The first four are resolved by `Resolve-TierModelPrincipalSid` and written into policy as
+`*S-1-…`. The German lab report of 2026-09-16 measured the result: 56 configured principals,
+0 unresolved, 42 of them carrying a German directory name.
+
+### The last three rows are not an exception to the SID rule
+
+They are a different question altogether: **they are not directory principals.** An
+`S-1-5-80-…` SID is a SHA-1 over a *service* name and an `S-1-5-82-…` SID a SHA-1 over an
+*application pool* name — identifiers that exist only on the machine where that service or pool
+is installed. The domain controller a deployment runs against has no `himds` and no
+`MSSQLSERVER`, so it cannot compose those SIDs at all. Not for a language reason: the principal
+simply is not there.
+
+So `New-TierModelGptTmplContent` writes them into `[Privilege Rights]` **unprefixed**, next to
+the `*S-1-…` entries it resolved. That is the INF convention — a leading `*` means "this is a
+SID", no prefix means "this is a name, resolve it locally" — and the Security Configuration
+Engine on the target member server does the resolution, where the service does exist.
+
+`literalStrings` in `config/tiermodel-gpos.json` is therefore **deferred resolution, not a
+localization loophole**, and it is original upstream behaviour (commit `f8270cd`, v1.0.0), not
+something the SID work introduced. `optional/Test-TierModelLocalizedDeployment.ps1` exempts
+exactly the declared ones and reports any other plain name, which is the finding that would
+matter.
+
+### What documentation does not settle
+
+Whether the domain label `NT SERVICE` itself is localized on a German host.
+
+In favour of invariant: [MS-LSAT] requires a row for the `"NT SERVICE"` domain in the
+Configurable Translation Database — a protocol-defined identifier, not a UI string; the
+resolvable part of the name is a registry service name and is not translated; and Microsoft's
+own *German-language* documentation instructs German administrators to enter exactly
+`NT SERVICE\<SERVICENAME>`. Against certainty: Microsoft documents localization where it exists
+(see `LocalService` above) and there is no such note for `NT SERVICE`, which is an indication
+rather than a proof.
+
+It also does not change anything the Tier Model controls. That string comes from the GPO
+templates, it is resolved on the member server rather than by this tool, and it is the same
+string every Windows administrator on a German system is told to type. If it did not resolve
+there, that would be a Windows-wide problem rather than a Tier Model one. A single
+`LookupAccountName` call on a German member server settles it:
+
+```powershell
+[System.Security.Principal.NTAccount]::new('NT SERVICE', 'TrustedInstaller').
+    Translate([System.Security.Principal.SecurityIdentifier])
+```
+
 ## Administrative templates (ADMX/ADML)
 
 This is the one place where language is still a **content** question rather than a code

@@ -73,11 +73,24 @@ Use `Resolve-TierModelPrincipalSid` (`modules/TierModel/public/Resolve-TierModel
 Its order: direct SID → `Administrator` via RID 500 → session cache → `Get-WellKnownSid` (absolute
 SIDs, no directory read) → canonical RID composition → name lookup.
 
+Why, with citations, and which principal classes are affected:
+`docs/language-support.md` § *Which names are localized — and which are not*. Short version:
+the SID is invariant and the **name is fixed at install time** — of the OS for machine-local
+principals, of the *domain* for domain principals. Microsoft's own guidance is to build the SID
+from constants rather than use the name, *"because the names of well-known SIDs can vary"*.
+
 **Do not add a bare built-in alias to `Get-WellKnownSid` without a configuration entry that needs
 it.** A bare name such as `Remote Desktop Users` or `Event Log Readers` is a legal name for a
 *customer's own domain group*; listing it shadows their group and silently resolves it to the
 BUILTIN SID. The `BUILTIN\...` prefixed form cannot collide and is safe to list in full.
 `tests/Unit.CanonicalPrincipal.Tests.ps1` pins this.
+
+`literalStrings` in `config/tiermodel-gpos.json` is **not** an exception to this rule and not a
+localization mechanism. `NT SERVICE\*`, `IIS APPPOOL\*` and `CLIUSR` are not directory
+principals at all: their SIDs are a SHA-1 over a service or application-pool name that exists
+only on the target machine, so the DC cannot compose them for any language. They are written
+into `[Privilege Rights]` unprefixed and resolved by the Security Configuration Engine on the
+member server — deferred resolution, upstream-original since v1.0.0.
 
 ### 2.5 Never compare identities by their rendered name
 
