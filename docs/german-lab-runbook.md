@@ -383,6 +383,12 @@ points at a specific mechanism:
 The console summary (`Applied / Skipped / Errors / Converged`) is **not** in the JSON log — read
 it off the console.
 
+**Result on `int.promiseIT.de`, 2026-09-16 11:00: passed.** Every planner reported zero, so the
+run never entered an execution phase and printed `Applied: 0 / Skipped: 0 / Errors: 0 /
+Converged: True` — the branch `Deploy-TierModel.ps1` takes when the plan is empty. 48 seconds
+end to end. Windows LAPS `TotalActions: 0, ExistingCount: 27` after applying 17 actions the run
+before, and the auth policies and silos read `AlreadyExist: 4` each.
+
 **Required: `Converged` with zero actions.** That is constitution principle III, and it is the
 direct test for the Windows LAPS SELF defect this branch fixes — SELF detection used to compare
 `NT AUTHORITY\SELF` against a string that German Windows renders as `NT-AUTORITÄT\SELBST`, so

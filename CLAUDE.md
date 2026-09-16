@@ -413,7 +413,7 @@ Ordered. Items 1–3 are the actual acceptance gate.
    phase D): every principal in the real config must resolve by a defined path; English and
    German fixtures must produce **identical SID sets**, both at the resolver and in the generated
    `[Privilege Rights]`.
-6. **German lab acceptance.** Phases A–C are done; D–F are open.
+6. **German lab acceptance.** Phases A–D are done; E–F are open.
 
    **Phase B (plan) passed** on `int.promiseIT.de`: prerequisites validated, 718 actions, no
    `RequiredGroupNotFound` — the two blockers the old code stopped at are gone. The canary
@@ -467,12 +467,30 @@ Ordered. Items 1–3 are the actual acceptance gate.
      `TotalActions: 0 / ExistingAcls: 105`, ADMX `0 / 0` of 30, MSA/gMSA/dMSA `0 / 4` each, and
      **`TotalGPOsToLink: 0`** — all 131 links are in place.
 
-   Still ahead, and no mock replaces any of it: **second deploy (Phase D) is now the branch's
-   acceptance test** — the same command again must report `Applied: 0 / Errors: 0 /
-   Converged: True`; any `ImportGPO`, auth silo or LAPS action there is a finding → audit
-   reporting zero drift, including `Test-TierModelAuthSilo` (its localized path has never run
-   on the lab) → verify the Deny ACE on the GPC
-   against `Domänencontroller`. Use `tests/Manual.Integration.Tests.xlsx`, and run
+   **Phase D (idempotency) passed — 2026-09-16 11:00, the same command again.** Every planner
+   reported zero, so the run never reached an execution phase at all and printed
+   `Applied: 0 / Skipped: 0 / Errors: 0 / Converged: True` (`Deploy-TierModel.ps1:2841-2849`,
+   the branch taken when the plan is empty). The whole run took 48 seconds.
+
+   | Planner | Result |
+   |---|---|
+   | OUs / groups / users | `ToCreate: 0` of 31, 0 of 29, 0 of 3 |
+   | OU ACLs | `TotalActions: 0, ExistingAcls: 105` |
+   | **GPOs, including links** | `GPO Full Deployment planning completed … TotalActions: 0` |
+   | ADMX | `AdmxToUpdate: 0, AdmlToUpdate: 0` of 30 |
+   | MSA / gMSA / dMSA | `TotalActions: 0, ExistingAcls: 4` each |
+   | **Windows LAPS** | `TotalActions: 0, ExistingCount: 27` |
+   | **Auth policies / silos** | `AlreadyExist: 4` each, `ToCreate: 0` — four `AuthPolicyFdPlanAlreadyExists` and four `AuthSiloFdPlanAlreadyExists` entries |
+
+   That is constitution principle III met on a localized directory, and it settles the two
+   things this branch changed most: the Windows LAPS SELF comparison (17 actions on the first
+   run, 0 on the second) and the GPO re-plan probe (it did **not** call a populated policy
+   folder empty). The auth silo objects created in the previous run were recognised by name —
+   they are Tier Model-owned objects, so no SID resolution is involved there.
+
+   Still ahead, and no mock replaces any of it: audit reporting zero drift, including
+   `Test-TierModelAuthSilo` (its localized path has never run on the lab) → verify the Deny ACE
+   on the GPC against `Domänencontroller`. Use `tests/Manual.Integration.Tests.xlsx`, and run
    `optional/Test-TierModelLocalizedDeployment.ps1 -PreferredDc <dc> -IncludeWinLaps -IncludeAuthSilos -IncludeAudit`.
    That script is read-only and writes one JSON report covering what the product audit does not:
    the directory's language, every configured principal with the SID and the *directory* name it
