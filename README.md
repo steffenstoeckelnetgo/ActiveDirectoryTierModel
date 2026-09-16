@@ -138,7 +138,7 @@ cd ActiveDirectoryTierModel
 - **Elevation**: Administrator privileges required
 - **Domain Admin**: Membership in Domain Admins group
 - **Modules**: ActiveDirectory, GroupPolicy (see `config/dependencies.json`)
-- **Language**: English (`en-US`) only — both the **host OS** (the machine you run the scripts from) and **Active Directory** must be English (see [Language Support](https://microsoft.github.io/ActiveDirectoryTierModel/language-support/))
+- **Language**: any — the **host OS** and **Active Directory** may be installed in any language. Built-in principals resolve by well-known SID rather than by directory name, so one configuration set works everywhere; the host and directory language are recorded as diagnostics and never block a run. `en-US` and `de-DE` are the regression-tested combinations (see [Language Support](https://microsoft.github.io/ActiveDirectoryTierModel/language-support/))
 
 *For detailed prerequisite validation, run `Test-TierModelPrerequisites`*
 

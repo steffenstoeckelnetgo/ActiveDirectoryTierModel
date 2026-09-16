@@ -10,7 +10,7 @@ Before deploying the Tier Model, ensure the following requirements are met:
 - **PowerShell 7.0 or later** (PowerShell 5.1 is not supported)
 - **Domain Admin membership** for deployment operations
 - **Network access** to your preferred Domain Controller
-- **English (`en-US`) only** — the **host OS** (the machine you run the scripts from) and **Active Directory** must both be English; non-English environments are detected and stopped up front (see [Language Support](language-support.md))
+- **Any host and directory language** — built-in principals resolve by well-known SID, not by directory name, so the **host OS** (the machine you run the scripts from) and **Active Directory** may each be installed in any language; `en-US` and `de-DE` are regression-tested (see [Language Support](language-support.md))
 
 ### Required PowerShell Modules
 - `ActiveDirectory` (version 1.0.1.0 or later)
