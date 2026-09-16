@@ -97,6 +97,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the gate result carries none of the shapes the consolidated summary reads. The skipped
   phase now counts as an error and marks the run non-convergent, as the standalone
   `-Include*` path already did.
+- The SID cache dropped `ActualName`, so the log line that proves an English configuration
+  name points at a localized directory object — `Domain Admins -> ...-512 (Domänen-Admins)` —
+  was complete only on the first resolution of a run. Every later caller read
+  `ActualName: null`, which is what the auth silo gate logged on the German lab domain,
+  because the GPO phase warms the cache long before it runs. Diagnostic only; the SID was
+  always correct.
 
 ### Changed
 - The two English-only prerequisite gates (host install language, well-known group names)

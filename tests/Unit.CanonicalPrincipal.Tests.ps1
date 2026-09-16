@@ -284,6 +284,56 @@ Describe "Resolve-TierModelPrincipalSid on a GERMAN directory" -Tag 'Unit', 'Res
         $result.ActualName | Should -Be 'Domänen-Admins'
     }
 
+    # The line above is the evidence that an English configuration name points at a localized
+    # directory object, and a deployment resolves the same principal many times. If the cache
+    # dropped ActualName, only the FIRST log entry of a run would carry the German name and
+    # every later one would read 'ActualName: null' - which is what the lab log showed, because
+    # the GPO phase warms the cache long before the auth silo gate runs.
+    It "keeps the localized directory name on a cache hit" {
+        $first  = Resolve-TierModelPrincipalSid -Principal 'Domain Admins' -DomainController $script:TestDc
+        $second = Resolve-TierModelPrincipalSid -Principal 'Domain Admins' -DomainController $script:TestDc
+
+        $second.Cached     | Should -Be $true
+        $second.ActualName | Should -Be $first.ActualName
+        # Anti-vacuity for the line above ($null -eq $null would satisfy it) is the seeded-cache
+        # case below, which asserts the literal German name on the cache-read path.
+    }
+
+    It "the cache-hit path returns ActualName without reading the directory" {
+        # Seeds the cache directly, so this case exercises the cache READ on its own - no SID
+        # composition, hence no [SecurityIdentifier], which cannot be constructed off Windows.
+        # It is the one case here that also runs under the Linux regression harness.
+        InModuleScope TierModel {
+            $script:SidCache = @{
+                'Domain Admins' = @{
+                    Sid        = 'S-1-5-21-1111111111-2222222222-3333333333-512'
+                    Source     = 'CanonicalDomainRid'
+                    Success    = $true
+                    Error      = $null
+                    ActualName = 'Domänen-Admins'
+                }
+            }
+        }
+
+        $result = Resolve-TierModelPrincipalSid -Principal 'Domain Admins' -DomainController $script:TestDc
+
+        $result.Cached     | Should -Be $true
+        $result.Sid        | Should -Be 'S-1-5-21-1111111111-2222222222-3333333333-512'
+        $result.ActualName | Should -Be 'Domänen-Admins'
+        Should -Invoke Get-ADGroup -ModuleName TierModel -Times 0 -Exactly
+    }
+
+    It "a principal with no directory object carries no ActualName, cached or not" {
+        # An absolute well-known SID is served from the static table and never read back, so it
+        # has no directory name. The cache must not invent one or change the object's shape.
+        $first  = Resolve-TierModelPrincipalSid -Principal 'Cryptographic Operators' -DomainController $script:TestDc
+        $second = Resolve-TierModelPrincipalSid -Principal 'Cryptographic Operators' -DomainController $script:TestDc
+
+        $second.Cached | Should -Be $true
+        ($first.PSObject.Properties.Name  -contains 'ActualName') | Should -Be $false
+        ($second.PSObject.Properties.Name -contains 'ActualName') | Should -Be $false
+    }
+
     It "still serves absolute built-ins, which never need the directory" {
         $result = Resolve-TierModelPrincipalSid -Principal 'Cryptographic Operators' -DomainController $script:TestDc
         $result.Success | Should -Be $true

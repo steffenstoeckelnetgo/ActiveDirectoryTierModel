@@ -125,7 +125,7 @@ function Resolve-TierModelPrincipalSid {
         if ($UseCache -and $script:SidCache.ContainsKey($Principal)) {
             Write-Verbose "Found cached SID for '$Principal' (CorrelationId: $CorrelationId)"
             $cachedResult = $script:SidCache[$Principal]
-            return [PSCustomObject]@{
+            $cachedObj = [PSCustomObject]@{
                 Principal = $Principal
                 Sid = $cachedResult.Sid
                 Source = $cachedResult.Source
@@ -133,6 +133,24 @@ function Resolve-TierModelPrincipalSid {
                 Success = $cachedResult.Success
                 Error = $cachedResult.Error
             }
+
+            # ActualName is carried through the cache because it is the evidence that an English
+            # configuration name points at a LOCALISED directory object, and a deployment
+            # resolves the same principal many times. Without it only the first log entry of a
+            # run read "Domain Admins -> ...-512 (Domaenen-Admins)" and every later one read
+            # "ActualName: null" - the auth silo gate saw exactly that, because the GPO phase
+            # warms the cache long before it runs. Added only when the entry has one, so the
+            # object's shape is unchanged for principals with no directory object (BUILTIN\...).
+            #
+            # ContainsKey, not $cachedResult.ActualName: the module runs under
+            # Set-StrictMode -Version Latest, where reading a key a hashtable does not have
+            # THROWS PropertyNotFoundException rather than returning $null - and the
+            # Get-WellKnownSid entries legitimately have no ActualName.
+            if ($cachedResult.ContainsKey('ActualName') -and $cachedResult['ActualName']) {
+                $cachedObj | Add-Member -NotePropertyName 'ActualName' -NotePropertyValue $cachedResult['ActualName'] -Force
+            }
+
+            return $cachedObj
         }
         
         # Try well-known SIDs first
@@ -186,6 +204,7 @@ function Resolve-TierModelPrincipalSid {
                         Source = $canonicalResult.Source
                         Success = $true
                         Error = $null
+                        ActualName = $canonicalResult.ActualName
                     }
                 }
 
@@ -230,6 +249,7 @@ function Resolve-TierModelPrincipalSid {
                         Source = $adResult.Source
                         Success = $true
                         Error = $null
+                        ActualName = if ($adResult.PSObject.Properties.Name -contains 'ActualName') { $adResult.ActualName } else { $null }
                     }
                 }
                 

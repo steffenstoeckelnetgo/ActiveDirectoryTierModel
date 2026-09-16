@@ -329,6 +329,11 @@ not read. The exception text says which. Two cases:
   Run the two ACL queries against a healthy sister GPO as well — the difference between them is
   the answer. Then clean up as below.
 
+**This path has been walked.** On 2026-09-16 a template GPO's SYSVOL folder denied reads even
+to a Domain Admin, across two runs on two days. Deleting the GPO and repeating Phase C rebuilt it
+cleanly — create, import and configure all with `FailedActions: 0`, `GptTmpl.inf` 3302 bytes
+under a new GUID.
+
 **Last resort, if a GPO is still not repaired.** The template GPOs
 (`*- Tier Model Template ...`) are never linked to an OU and affect no machine, so deleting one
 and letting the next run recreate it is free. Confirm it is unlinked first:
@@ -364,6 +369,19 @@ again**:
     -IncludeMsa -IncludeGmsa -IncludeDmsa -IncludeWinLaps -IncludeAuthSilos `
     -ConfirmApply -Logging -OutputFileBase "TierModel-Deploy-DE-02"
 ```
+
+Required: `Applied: 0`, `Errors: 0`, `Converged: True`. Every action is a finding, and each one
+points at a specific mechanism:
+
+| Action that appears | What it would mean |
+|---|---|
+| `CreateGPO` / `ImportGPO` / `ConfigureGPO` | The SYSVOL probe called a populated policy folder empty — its re-plan is too eager |
+| `AuthPolicy` / `AuthSilo` create | The policies and silos created in the previous run are not being recognised |
+| Auth silo membership > 0 | Membership runs only for silos created in the same run; expect `Already deployed — nothing to create` |
+| Any Windows LAPS action | A regression: the previous run reported `TotalActions: 0` against 27 existing delegations |
+
+The console summary (`Applied / Skipped / Errors / Converged`) is **not** in the JSON log — read
+it off the console.
 
 **Required: `Converged` with zero actions.** That is constitution principle III, and it is the
 direct test for the Windows LAPS SELF defect this branch fixes — SELF detection used to compare

@@ -312,6 +312,14 @@ run ended `Deploy script completed successfully` with no silo deployed. The stan
 `-Include*` path already counted it (`:3458`); the `-FullDeployment` path now does too. That is a
 tightening, not a relaxation — the control flow is unchanged.
 
+The C3 run then showed a third, smaller thing: `AuthSiloPrerequisiteGroupOk … ActualName: null`.
+The SID cache stored only `Sid`/`Source`/`Success`/`Error`, so the *directory* name — the whole
+point of the log line — survived only until the first cache hit, and the GPO phase warms the
+cache long before the gate runs. It is carried through the cache now.
+*Trap:* the module runs under `Set-StrictMode -Version Latest`, where reading a key a hashtable
+does not have **throws** instead of returning `$null`, and the `Get-WellKnownSid` entries
+legitimately have none. Use `ContainsKey`.
+
 **The SID-composition core is verified.** `tests/Unit.CanonicalPrincipal.Tests.ps1` ran
 **59 of 59 green on a German Windows host against a German directory** — the 22 tests that
 cannot even execute on Linux are precisely the ones that carry this proof. What remains
@@ -395,20 +403,41 @@ Ordered. Items 1–3 are the actual acceptance gate.
    ExistingCount: 31`, groups `0 / 29`, users `0`, OU ACLs `TotalActions: 0 / ExistingAcls: 105`
    (all "already exists with exact match"), ADMX `0 / 0`.
 
-   Two findings from that run:
+   Two findings from that run, **both now closed**:
 
    - **The half-built GPO `{60718cf3-…}` was not repaired, correctly.** The SYSVOL probe threw
      *"Access to the path … GptTmpl.inf is denied"* — `Test-Path` raises on a denied path instead
      of returning `$false` — so the deliberate asymmetry declined to re-plan
-     (`ImportActions: 0, ConfigureActions: 0`). The denial is persistent, across two runs on two
-     days, so the retry cannot help either. This is the documented fallback, not a defect: the
-     operator deletes the unlinked template GPO and the next run recreates it. Diagnose the ACL
-     **before** deleting; `docs/german-lab-runbook.md` has the sequence.
-   - **The auth silo localization defect** (§5), now fixed — Phase C is to be repeated once more.
+     (`ImportActions: 0, ConfigureActions: 0`). The denial was persistent, across two runs on two
+     days, so the retry could not help either. This was the documented fallback, not a defect;
+     the operator deleted the unlinked template GPO and the next run recreated it. Diagnose the
+     ACL **before** deleting; `docs/german-lab-runbook.md` has the sequence.
+   - **The auth silo localization defect** (§5), fixed in `bc3500f`.
 
-   Still ahead, and no mock replaces any of it: second deploy (idempotency, which is exactly the
-   LAPS SELF bug — this run applied 17 LAPS actions because it was LAPS's first, so the next run
-   is the decisive one) → audit reporting zero drift → verify the Deny ACE on the GPC
+   **Phase C, third run (2026-09-16 10:35–10:37, commit `bc3500f`) — the fixes are accepted on
+   the live German domain.** Exactly 11 actions, everything else already converged:
+
+   - **Auth silo gate green:** `AuthSiloPrerequisiteGroupOk … GroupName: "Domain Controllers",
+     Sid: "S-1-5-21-2230522700-2543936044-3532250090-516"`, the same for `-521` →
+     `Passed: true, FailureCount: 0, Checked: 8`. Then 4 policies and 4 silos created, both
+     `ErrorCount: 0`.
+   - **`Get-ADGroupMember -Identity <SID>` works against the German directory:**
+     `AuthSiloAccessGranted … SamAccountName: "DC1$"` — DC1 was found *through* the group
+     resolved by RID 516, `Converged: true`.
+   - **The GPO was rebuilt end to end:** create, import (2.2 s) and configure each
+     `FailedActions: 0`, new GUID `527b777a-…`, `GptTmpl.inf` 3302 bytes.
+   - **Windows LAPS is idempotent — the direct proof for the SELF defect this branch fixes:**
+     `WinLapsAclFdPlanningComplete … TotalActions: 0, ExistingCount: 27`, logged twice in the
+     run. The previous run had applied 17 LAPS actions.
+   - Everything else at zero: OUs `0 / 31`, groups `0 / 29`, users `0`, OU ACLs
+     `TotalActions: 0 / ExistingAcls: 105`, ADMX `0 / 0` of 30, MSA/gMSA/dMSA `0 / 4` each, and
+     **`TotalGPOsToLink: 0`** — all 131 links are in place.
+
+   Still ahead, and no mock replaces any of it: **second deploy (Phase D) is now the branch's
+   acceptance test** — the same command again must report `Applied: 0 / Errors: 0 /
+   Converged: True`; any `ImportGPO`, auth silo or LAPS action there is a finding → audit
+   reporting zero drift, including `Test-TierModelAuthSilo` (its localized path has never run
+   on the lab) → verify the Deny ACE on the GPC
    against `Domänencontroller`. Use `tests/Manual.Integration.Tests.xlsx`, and run
    `optional/Test-TierModelLocalizedDeployment.ps1 -PreferredDc <dc> -IncludeWinLaps -IncludeAuthSilos -IncludeAudit`.
    That script is read-only and writes one JSON report covering what the product audit does not:
