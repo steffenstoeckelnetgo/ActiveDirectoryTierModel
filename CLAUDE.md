@@ -413,7 +413,7 @@ Ordered. Items 1–3 are the actual acceptance gate.
    phase D): every principal in the real config must resolve by a defined path; English and
    German fixtures must produce **identical SID sets**, both at the resolver and in the generated
    `[Privilege Rights]`.
-6. **German lab acceptance.** Phases A–D are done; E–F are open.
+6. **German lab acceptance.** Phases A–E are done; F is open.
 
    **Phase B (plan) passed** on `int.promiseIT.de`: prerequisites validated, 718 actions, no
    `RequiredGroupNotFound` — the two blockers the old code stopped at are gone. The canary
@@ -488,15 +488,63 @@ Ordered. Items 1–3 are the actual acceptance gate.
    folder empty). The auth silo objects created in the previous run were recognised by name —
    they are Tier Model-owned objects, so no SID resolution is involved there.
 
-   Still ahead, and no mock replaces any of it: audit reporting zero drift, including
-   `Test-TierModelAuthSilo` (its localized path has never run on the lab) → verify the Deny ACE
-   on the GPC against `Domänencontroller`. Use `tests/Manual.Integration.Tests.xlsx`, and run
-   `optional/Test-TierModelLocalizedDeployment.ps1 -PreferredDc <dc> -IncludeWinLaps -IncludeAuthSilos -IncludeAudit`.
-   That script is read-only and writes one JSON report covering what the product audit does not:
-   the directory's language, every configured principal with the SID and the *directory* name it
-   resolved to, whether the Deny-Apply ACE is actually on the GPC, and the `[Privilege Rights]`
-   SID sets from SYSVOL. Running it on an English domain as well and diffing the
-   `PrivilegeRights` sections is the parity proof.
+   **Phase E, first half (audit) passed — 2026-09-16 11:04.** `Audit-TierModel.ps1
+   -FullDeployment` with every `-Include*` switch: **`TotalChecked: 433, DriftCount: 0,
+   ErrorCount: 0, UnverifiedCount: 0`**.
+
+   | Scope | Result |
+   |---|---|
+   | OUs / groups / users | 31 / 29 / 3, no drift |
+   | OU ACLs | `Compliant: 105, Mismatched: 0, CompliancePercentage: 100.0` |
+   | GPOs | `TotalChecked: 146, TotalPassed: 146, TotalFailed: 0` — existence, links **and** GptTmpl content |
+   | ADMX | 60 of 60 |
+   | MSA / gMSA / dMSA | 2 each, compliant |
+   | **Windows LAPS** | ACLs `Compliant: 7`, decryptors `Compliant: 6`, `Drift: 0` |
+   | **Auth policies** | `Compliant: 4, NonCompliant: 0` — the `Member_of_any` SDDL compared against the live directory |
+   | **Auth silos** | `Compliant: 4, NonCompliant: 0` |
+
+   Two of those rows had never run against a localized directory before. The auth silo audit
+   expands `Domain Controllers` to enumerate expected computer members; before the SID fix that
+   expansion threw and `Test-TierModelAuthSilo.ps1:169` turned the failure into a compliance
+   issue, so the verdict would have been NonCompliant on principle. The Windows LAPS rows are
+   the audit-side counterpart of the SELF/holder comparison. The rebuilt template GPO
+   (`… Tier 1 Servers Account Restrictions - Override - Deny Remote Desktop`) passes content
+   validation with a 1648-byte GptTmpl, and no GPO reports a missing GptTmpl.inf — the SYSVOL
+   repair is confirmed from the other side.
+
+   **Phase E, second half (localization report) passed — 2026-09-16 11:05.**
+   `optional/Test-TierModelLocalizedDeployment.ps1 -IncludeWinLaps -IncludeAuthSilos
+   -IncludeAudit`, read-only, covering what the product audit does not:
+
+   - **Environment.** Host `de-DE`, install language `0407`, domain `int.promiseIT.de`
+     (`Windows2025Domain`, forest root), `DirectoryLanguage: localized`. Canaries:
+     `Domänen-Admins`, `Server-Operatoren`, `Konten-Operatoren`.
+   - **Principal resolution: `Total: 56, Unresolved: 0, LocalizedNameCount: 42`.** Every
+     principal the configuration names resolves, and 42 of them carry a *German* directory
+     name — `Domain Controllers → …-516 (Domänencontroller)`,
+     `Enterprise Admins → …-519 (Organisations-Admins)`,
+     `Allowed RODC Password Replication Group → …-571
+     (Zulässige RODC-Kennwortreplikationsgruppe)`. Sources are `CanonicalDomainRid`,
+     `CanonicalForestRootRid`, `WellKnown` and `ADGroup`; not one falls back to a name lookup
+     of an English built-in.
+   - **The Deny-Apply ACE is on the GPC: `Checked: 2, Missing: 0`,** `AcePresent: true` for both
+     `…-516` and `…-521` on `CN={cdfe6fce-…},CN=Policies,CN=System,DC=int,DC=promiseIT,DC=de`.
+     That is the live confirmation of the security fix in `New-TierModelGpo` — the product audit
+     does **not** check this ACE, only this report does
+     (`optional/Test-TierModelLocalizedDeployment.ps1:386`).
+   - **`[Privilege Rights]` from SYSVOL: 1651 of 1791 entries across 29 GPOs are SIDs.** The
+     140 that are not are 33 distinct machine-local principals — `NT SERVICE\*`,
+     `IIS APPPOOL\*`, `CLIUSR` — and every one of them is a configured
+     `literalStrings` entry in `config/tiermodel-gpos.json` (`:715`, `:757`, `:3979` …). They
+     have no domain SID by construction; `secedit` resolves them on the target machine. The
+     report flags them as `Problems` because its rule is "everything should be a SID"; that
+     rule does not yet know about `literalStrings`.
+   - Third independent confirmation that `DomainControllersContainer` is
+     `OU=Domain Controllers,DC=int,DC=promiseIT,DC=de` — **not** localized on this domain.
+
+   **Still open in Phase E:** nothing, other than running the same report on an English domain
+   and diffing the `PrivilegeRights` sections, which is the parity proof. Use
+   `tests/Manual.Integration.Tests.xlsx` for the manual checklist.
 7. **German ADML content.** `optional/New-TierModelAdmlManifest.ps1` and the procedure in
    `docs/admx-management.md` are ready; the `.adml` files are Microsoft redistributables and must
    be supplied by the operator. `download.microsoft.com` is blocked from the build environment
@@ -514,8 +562,35 @@ Ordered. Items 1–3 are the actual acceptance gate.
 - **Does `Import-GPO` carry the source lab's `<SecurityGroups>` names into the imported GPO?**
   `config/gpo/**/Backup.xml` contains the source domain's `Domain Admins` / `Enterprise Admins`
   with their original SIDs. Expected to be inert because `Import-GPO` imports settings rather
-  than the GPO security descriptor — **expected, not verified.** If it is not inert, a migration
-  table is needed.
+  than the GPO security descriptor — **still expected, not verified.**
+
+  The localization report narrows it but does not close it. Every `[Privilege Rights]` SID it
+  read from SYSVOL carries this domain's prefix `S-1-5-21-2230522700-2543936044-3532250090`, so
+  no foreign SID reached the *settings*. What nobody has looked at is the GPC's full DACL: the
+  report checks only that the two Deny-Apply ACEs are present, not that nothing else is there.
+  Two read-only commands settle it — a foreign SID has no local translation and therefore shows
+  up as a raw `S-1-5-21-…` string:
+
+  ```powershell
+  $dc  = 'DC1.int.promiseIT.de'
+  $own = (Get-ADDomain -Server $dc).DomainSID.Value
+  $dn  = (Get-ADDomain -Server $dc).DistinguishedName
+
+  Get-GPO -All -Server $dc | Where-Object DisplayName -like '`*- Tier*' | ForEach-Object {
+      $acl = Get-Acl -Path "AD:CN={$($_.Id)},CN=Policies,CN=System,$dn"
+      $foreign = $acl.Access | Where-Object {
+          $_.IdentityReference.Value -match '^S-1-5-21-' -and
+          $_.IdentityReference.Value -notlike "$own*"
+      }
+      if ($foreign) { [PSCustomObject]@{ Gpo = $_.DisplayName; Foreign = ($foreign.IdentityReference.Value -join ', ') } }
+  }
+
+  Get-ChildItem "\\$dc\SYSVOL\int.promiseIT.de\Policies" -Recurse -Filter GptTmpl.inf |
+      Select-String -Pattern "S-1-5-21-(?!$($own -replace '^S-1-5-21-'))" |
+      Select-Object -First 20 Path, Line
+  ```
+
+  No output from either means inert, and the question is answered by measurement.
 
 ---
 
