@@ -91,15 +91,37 @@ function Test-TierModelAuthSiloPrerequisite {
     # ── Check each group ───────────────────────────────────────────────────────────────
     foreach ($groupName in $allGroupNames) {
         $checkedGroups.Add($groupName) | Out-Null
+
+        # Resolve the configured name to a SID first. The built-ins this configuration
+        # references - 'Domain Controllers' (RID 516) and 'Read-only Domain Controllers'
+        # (RID 521) - carry localized directory names, so asking the directory for the English
+        # name finds nothing on a German domain and this gate blocked the entire silo phase
+        # there (lab run 2026-09-16). See Resolve-TierModelGroupIdentity.
+        $resolved = Resolve-TierModelGroupIdentity -GroupName $groupName -DomainController $DomainController -CorrelationId $CorrelationId
+        if (-not $resolved.Success) {
+            $failures += "Group '$groupName' not found in Active Directory (required by auth silo config): $($resolved.Error)"
+            Write-TierModelLog -Level Warning -Message "AuthSiloPrerequisiteGroupMissing" -Data @{
+                GroupName     = $groupName
+                Exception     = $resolved.Error
+                CorrelationId = $CorrelationId
+            } | Out-Null
+            continue
+        }
+
         try {
-            Get-ADGroup -Identity $groupName -Server $DomainController -ErrorAction Stop | Out-Null
+            # The read-back stays, and it stays a Get-ADGroup: it is what proves the principal
+            # is a GROUP. Resolve-TierModelPrincipalSid falls back to Resolve-ADPrincipalSid,
+            # which tries Get-ADUser before Get-ADGroup, so a user account carrying a group's
+            # name would otherwise satisfy this gate. Only the -Identity became SID-based.
+            Get-ADGroup -Identity $resolved.Identity -Server $DomainController -ErrorAction Stop | Out-Null
             Write-TierModelLog -Level Debug -Message "AuthSiloPrerequisiteGroupOk" -Data @{
-                GroupName = $groupName; CorrelationId = $CorrelationId
+                GroupName = $groupName; Sid = $resolved.Identity; ActualName = $resolved.ActualName; CorrelationId = $CorrelationId
             } | Out-Null
         } catch {
             $failures += "Group '$groupName' not found in Active Directory (required by auth silo config)"
             Write-TierModelLog -Level Warning -Message "AuthSiloPrerequisiteGroupMissing" -Data @{
                 GroupName     = $groupName
+                Sid           = $resolved.Identity
                 Exception     = $_.Exception.Message
                 CorrelationId = $CorrelationId
             } | Out-Null

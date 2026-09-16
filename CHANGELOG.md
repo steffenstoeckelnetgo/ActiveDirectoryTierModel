@@ -78,6 +78,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     publishes both an `Errors` array and a `Failed` integer for the same failures, and both
     were added: two failed GPO actions printed `Errors: 4`. `Applied`/`Executed` had the
     same shape. Each result is now counted from exactly one source.
+- **Authentication Policy Silos could not be deployed against a localized domain.** The
+  silo chain passed the configured group name straight to `-Identity`, so
+  `Domain Controllers` and `Read-only Domain Controllers` — which the directory serves
+  under localized names — resolved to nothing and the prerequisite gate skipped the entire
+  silo phase (`FailureCount: 2, Checked: 8` on the German lab domain). The SDDL side
+  already resolved by SID; the gate, the membership planner
+  (`Get-TierModelAuthSiloMembershipFd`), the membership assignment
+  (`Set-TierModelAuthSiloMembership`) and the silo audit (`Test-TierModelAuthSilo`) now do
+  the same through the shared, module-internal `Resolve-TierModelGroupIdentity`. In the
+  audit the old behaviour was worse than an error: the failed expansion became a
+  compliance issue string, so a localized domain audited as non-compliant on principle.
+  The gate keeps its `Get-ADGroup` read-back — it is what proves the principal is a group,
+  since the resolver's name fallback tries `Get-ADUser` first — only its `-Identity`
+  became SID-based.
+- A `-FullDeployment` run whose auth silo prerequisites failed printed the failures in red
+  and then reported `Deploy script completed successfully` with no silo deployed, because
+  the gate result carries none of the shapes the consolidated summary reads. The skipped
+  phase now counts as an error and marks the run non-convergent, as the standalone
+  `-Include*` path already did.
 
 ### Changed
 - The two English-only prerequisite gates (host install language, well-known group names)

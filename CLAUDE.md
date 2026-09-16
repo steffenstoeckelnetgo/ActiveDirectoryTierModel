@@ -280,6 +280,38 @@ is written so it can be split out again for upstream.
 GPO links. Turning it into a warn-and-continue is exactly what rule 2.2 forbids without design
 sign-off. With the retry and the re-plan in place it stops being the practical problem.
 
+### Authentication Policy Silos — the defect the second lab run found
+
+The hardened Phase C run (2026-09-16) got as far as the silo phase and stopped there:
+`AuthSiloPrerequisiteGroupMissing … GroupName: "Domain Controllers"`, twice, then
+`Passed: false, FailureCount: 2, Checked: 8` — the six Tier Model-owned groups resolved, the two
+built-ins did not. A textbook breach of rule 2.4, found only because the GPO fixes let the run
+reach that far.
+
+The SDDL half of the silo code was already correct (`New-TierModelAuthPolicy.ps1:74`,
+`Test-TierModelAuthPolicy.ps1:151` go through `Resolve-TierModelPrincipalSid`). The membership
+half was not, in four places: the prerequisite gate, the membership planner
+(`Get-TierModelAuthSiloMembershipFd`), the membership assignment
+(`Set-TierModelAuthSiloMembership`) and the silo audit (`Test-TierModelAuthSilo`). All four now
+go through `Resolve-TierModelGroupIdentity` — module-scope and unexported, inline in
+`TierModel.psm1` next to `Invoke-TierModelTransientRetry`, for the same manifest-test reason.
+
+Two things are deliberate:
+
+- **The gate keeps its `Get-ADGroup` read-back.** Only the `-Identity` became SID-based. The
+  resolver's last resort is `Resolve-ADPrincipalSid`, which tries `Get-ADUser` *before*
+  `Get-ADGroup` (`Resolve-TierModelPrincipalSid.ps1:996`), so dropping the read-back would let a
+  *user account* named `Tier0PAWDevices` satisfy a group prerequisite. That is a relaxation of
+  security-relevant validation — rule 2.2 territory — for one saved directory read out of eight.
+- **In the audit the old behaviour was worse than an error.** `Test-TierModelAuthSilo.ps1:169`
+  turns a failed group expansion into a *compliance issue string*, so a localized domain audited
+  as non-compliant on principle rather than reporting a read failure.
+
+Alongside it, `Deploy-TierModel.ps1:2717`: a failed gate printed red and was not counted, so the
+run ended `Deploy script completed successfully` with no silo deployed. The standalone
+`-Include*` path already counted it (`:3458`); the `-FullDeployment` path now does too. That is a
+tightening, not a relaxation — the control flow is unchanged.
+
 **The SID-composition core is verified.** `tests/Unit.CanonicalPrincipal.Tests.ps1` ran
 **59 of 59 green on a German Windows host against a German directory** — the 22 tests that
 cannot even execute on Linux are precisely the ones that carry this proof. What remains
@@ -355,8 +387,28 @@ Ordered. Items 1–3 are the actual acceptance gate.
    exactly `31 + 29 + 3 + 105 + 146 + 122 + 22 + 60` — no GPO link was applied, because the
    configure failure returns before phase 4.
 
+   **Phase C repeated (2026-09-16) on the fixed code — the GPO fixes are accepted.** All
+   **131 GPO links applied**, `FailedActions: 0`, closing the gap from the first run. MSA, gMSA
+   and dMSA applied 4 of 4 each. **Windows LAPS ran for the first time at all**:
+   `AppliedActions: 17, FailedActions: 0` — SELF on 6 OUs and decryptors on 6 GPOs against a
+   German directory. The standard scopes were already converged: OUs `ToCreate: 0 /
+   ExistingCount: 31`, groups `0 / 29`, users `0`, OU ACLs `TotalActions: 0 / ExistingAcls: 105`
+   (all "already exists with exact match"), ADMX `0 / 0`.
+
+   Two findings from that run:
+
+   - **The half-built GPO `{60718cf3-…}` was not repaired, correctly.** The SYSVOL probe threw
+     *"Access to the path … GptTmpl.inf is denied"* — `Test-Path` raises on a denied path instead
+     of returning `$false` — so the deliberate asymmetry declined to re-plan
+     (`ImportActions: 0, ConfigureActions: 0`). The denial is persistent, across two runs on two
+     days, so the retry cannot help either. This is the documented fallback, not a defect: the
+     operator deletes the unlinked template GPO and the next run recreates it. Diagnose the ACL
+     **before** deleting; `docs/german-lab-runbook.md` has the sequence.
+   - **The auth silo localization defect** (§5), now fixed — Phase C is to be repeated once more.
+
    Still ahead, and no mock replaces any of it: second deploy (idempotency, which is exactly the
-   LAPS SELF bug) → audit reporting zero drift → verify the Deny ACE on the GPC
+   LAPS SELF bug — this run applied 17 LAPS actions because it was LAPS's first, so the next run
+   is the decisive one) → audit reporting zero drift → verify the Deny ACE on the GPC
    against `Domänencontroller`. Use `tests/Manual.Integration.Tests.xlsx`, and run
    `optional/Test-TierModelLocalizedDeployment.ps1 -PreferredDc <dc> -IncludeWinLaps -IncludeAuthSilos -IncludeAudit`.
    That script is read-only and writes one JSON report covering what the product audit does not:

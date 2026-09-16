@@ -292,9 +292,42 @@ deployment when any configure action fails, and phase 4 (linking) comes after ph
 fail-fast is deliberate and was left in place. The practical consequence: as long as `Errors` is
 not 0, assume no GPO is linked, and do not read anything into the OU structure looking complete.
 
+**A skipped auth silo phase is now an error.** If `Test-TierModelAuthSiloPrerequisite` fails,
+the run prints the missing groups in red and skips the whole silo phase — and the summary counts
+that skip, so `Errors` is non-zero and `Converged` is `False`. It used to end
+`Deploy script completed successfully` with no silo deployed. A failure naming
+`Domain Controllers` or `Read-only Domain Controllers` means you are running code from before
+those groups were resolved by SID; pull the branch.
+
 **Reading the counts.** `Applied` and `Errors` now count each result once. Before this branch a
 result that published both an `Errors` array and a `Failed` integer was counted twice, so two
 failed GPO actions printed `Errors: 4`.
+
+**If the probe says SYSVOL could not be read.** The log line
+`GPO policy content could not be read from SYSVOL - assuming it is intact` means the re-plan
+declined on purpose: re-importing overwrites settings, so it must never act on a state it could
+not read. The exception text says which. Two cases:
+
+- *Path not replicated / temporarily unreachable* — run Phase C again.
+- *Access to the path … is denied*, reproducibly, even as a Domain Admin — the policy folder's
+  ACL is broken. That is not transient and no retry will clear it. Capture the evidence
+  **before** deleting anything, because deleting the GPO destroys it:
+
+  ```powershell
+  $dc = 'DC1.int.promiseIT.de'
+  $g  = '<guid>'
+  $p  = "\\$dc\SYSVOL\<domain>\Policies\{$g}"
+
+  (Get-GPO -Guid $g -Server $dc) | Select-Object DisplayName, Id, GpoStatus
+  Get-ChildItem $p -Recurse -Force -ErrorAction Continue | Select-Object FullName, Length
+  (Get-Acl $p).Access | Format-Table IdentityReference, FileSystemRights, AccessControlType
+  icacls "$p\Machine"
+  icacls "$p\Machine\Microsoft\Windows NT\SecEdit"
+  whoami /groups | Select-String 'S-1-5-21-.*-512'
+  ```
+
+  Run the two ACL queries against a healthy sister GPO as well — the difference between them is
+  the answer. Then clean up as below.
 
 **Last resort, if a GPO is still not repaired.** The template GPOs
 (`*- Tier Model Template ...`) are never linked to an OU and affect no machine, so deleting one

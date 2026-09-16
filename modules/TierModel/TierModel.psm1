@@ -251,6 +251,66 @@ function Invoke-TierModelTransientRetry {
     }
 }
 
+function Resolve-TierModelGroupIdentity {
+    <#
+    .SYNOPSIS
+    Resolve a configured security-group name to an -Identity value the directory accepts
+    regardless of its language.
+
+    .DESCRIPTION
+    Module-scope helper, deliberately not exported (see the note at Initialize-TierModelLogging:
+    tests/Unit.ModuleManifest.Tests.ps1 counts FILES in public/ against FunctionsToExport, so a
+    shared helper used by several public functions lives here).
+
+    Active Directory localizes the names of its built-in principals at domain creation. A German
+    domain serves "Domaenencontroller", never "Domain Controllers", so
+    Get-ADGroupMember -Identity 'Domain Controllers' finds nothing there - which is exactly how
+    the Authentication Policy Silo phase stopped on the German lab domain on 2026-09-16. The
+    English names in config/*.json are canonical IDENTIFIERS, not directory names: they are
+    resolved to a SID and the SID is what the directory is asked for.
+
+    Only the resolution is centralised. Every caller keeps the cmdlet it used before - including
+    the prerequisite gate's Get-ADGroup, which is what enforces that the principal really is a
+    group and must not be dropped.
+
+    .PARAMETER GroupName
+    The group name exactly as written in the configuration.
+
+    .PARAMETER DomainController
+    Domain controller every directory read in this run targets.
+
+    .PARAMETER CorrelationId
+    Tracking ID for logging correlation.
+
+    .OUTPUTS
+    [hashtable] @{ Success; Identity; ActualName; Error }
+    Identity is a SID string on success and is what belongs in -Identity.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$GroupName,
+
+        [Parameter(Mandatory)]
+        [string]$DomainController,
+
+        [string]$CorrelationId
+    )
+
+    # -WarningAction SilentlyContinue: the resolver warns on every miss, and each caller here
+    # already turns a miss into its own error, finding or gate failure.
+    $sidResult = Resolve-TierModelPrincipalSid -Principal $GroupName -DomainController $DomainController -CorrelationId $CorrelationId -WarningAction SilentlyContinue
+
+    if (-not $sidResult -or -not $sidResult.Success -or -not $sidResult.Sid) {
+        $reason = if ($sidResult -and $sidResult.Error) { $sidResult.Error } else { "no SID could be resolved" }
+        return @{ Success = $false; Identity = $null; ActualName = $null; Error = $reason }
+    }
+
+    $actualName = if ($sidResult.PSObject.Properties.Name -contains 'ActualName') { $sidResult.ActualName } else { $null }
+
+    return @{ Success = $true; Identity = $sidResult.Sid; ActualName = $actualName; Error = $null }
+}
+
 Write-Verbose "TierModel module loaded with CorrelationId: $script:CorrelationId"
 
 function Get-TierModelConfigHash {

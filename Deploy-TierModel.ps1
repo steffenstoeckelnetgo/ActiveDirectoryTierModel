@@ -2717,6 +2717,11 @@ if ($FullDeployment) {
                     if (-not $authSilosPrereqFd.Passed) {
                         Write-Host "  ❌ Auth silo prerequisites not met — skipping silo deployment:" -ForegroundColor Red
                         $authSilosPrereqFd.Failures | ForEach-Object { Write-Host "    - $_" -ForegroundColor Red }
+                        # Carried to the consolidated summary below. A skipped phase is not a
+                        # successful run: the gate publishes none of the three result shapes the
+                        # aggregation loop understands, so it is counted there explicitly. The
+                        # standalone -Include* path has always done this (see $standaloneTotalErrors).
+                        $authSiloPrereqFailureCount = @($authSilosPrereqFd.Failures).Count
                     } else {
                         # Auth Policies — create-only, fresh plan at execution time
                         $authPolicyExecPlan = Get-TierModelAuthPolicyFd -Config $config -DomainController $PreferredDc
@@ -2816,6 +2821,15 @@ if ($FullDeployment) {
             }
         }
         
+        # The auth silo prerequisite gate is not one of $allResults - it returns
+        # Passed/Failures/Checked, none of the shapes the loop above reads - so its failures are
+        # added here, once. Without this the run reported "completed successfully" while the
+        # entire silo phase had been skipped (German lab run, 2026-09-16).
+        if ((Get-Variable authSiloPrereqFailureCount -ErrorAction SilentlyContinue) -and $authSiloPrereqFailureCount -gt 0) {
+            $totalErrors += $authSiloPrereqFailureCount
+            $overallConverged = $false
+        }
+
         # Display consolidated results
         Write-Host "Applied: $totalApplied" -ForegroundColor Green
         Write-Host "Skipped: $totalSkipped" -ForegroundColor Yellow

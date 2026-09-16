@@ -3519,6 +3519,16 @@ Describe "Deploy-TierModel Consolidated Result Counting" -Tag "Integration", "De
         $script:DeployScriptPath = Join-Path $PSScriptRoot '..\Deploy-TierModel.ps1'
         $script:DeployAst = [System.Management.Automation.Language.Parser]::ParseFile(
             $script:DeployScriptPath, [ref]$null, [ref]$null)
+
+        # The invariant is per-RESULT: inside the aggregation loop each result contributes to
+        # each total exactly once. Contributions from outside the loop (the auth silo
+        # prerequisite gate, which publishes none of the three result shapes) are a different
+        # source and are asserted separately below.
+        $script:AggregationLoop = $script:DeployAst.FindAll({
+            param($node)
+            $node -is [System.Management.Automation.Language.ForEachStatementAst] -and
+            $node.Condition.Extent.Text -eq '$allResults'
+        }, $true) | Select-Object -First 1
     }
 
     # The GPO deployment result publishes BOTH an Errors array and a Failed integer for the same
@@ -3527,8 +3537,14 @@ Describe "Deploy-TierModel Consolidated Result Counting" -Tag "Integration", "De
     # Asserted on the AST rather than by running a deployment, because this summary block only
     # executes at the end of a full -ConfirmApply run against a live directory.
 
+    It "Has exactly one result-aggregation loop to assert against" {
+        # Anti-vacuity for every assertion below: they all search inside this node.
+        $script:AggregationLoop | Should -Not -BeNullOrEmpty
+        $script:AggregationLoop.Variable.Extent.Text | Should -Be '$result'
+    }
+
     It "Counts each result's failures from exactly one source" {
-        $assignments = $script:DeployAst.FindAll({
+        $assignments = $script:AggregationLoop.FindAll({
             param($node)
             $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and
             $node.Operator -eq 'PlusEquals' -and
@@ -3536,11 +3552,11 @@ Describe "Deploy-TierModel Consolidated Result Counting" -Tag "Integration", "De
         }, $true)
 
         @($assignments).Count | Should -Be 1 `
-            -Because 'a second += on $totalErrors would count the same failures twice, as Errors.Count + Failed did'
+            -Because 'a second += on $totalErrors inside the loop would count the same failures twice, as Errors.Count + Failed did'
     }
 
     It "Counts each result's applied actions from exactly one source" {
-        $assignments = $script:DeployAst.FindAll({
+        $assignments = $script:AggregationLoop.FindAll({
             param($node)
             $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and
             $node.Operator -eq 'PlusEquals' -and
@@ -3555,7 +3571,7 @@ Describe "Deploy-TierModel Consolidated Result Counting" -Tag "Integration", "De
         # Anti-vacuity: the two assertions above would also pass if the counting were deleted
         # outright. The fallback chain has to remain, because the result objects genuinely differ:
         # integers on the execution results, arrays on the plan-shaped ones.
-        $errorAssignment = $script:DeployAst.FindAll({
+        $errorAssignment = $script:AggregationLoop.FindAll({
             param($node)
             $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and
             $node.Operator -eq 'PlusEquals' -and
@@ -3566,5 +3582,22 @@ Describe "Deploy-TierModel Consolidated Result Counting" -Tag "Integration", "De
         $errorAssignment.Right.Extent.Text | Should -Match "'Failed'"
         $errorAssignment.Right.Extent.Text | Should -Match "'Errors'"
         $errorAssignment.Right.Extent.Text | Should -Match "'Summary'"
+    }
+
+    # A failed -IncludeAuthSilos prerequisite gate skips the entire silo phase. In the
+    # -FullDeployment path that skip used to be invisible to the summary, so the German lab run
+    # of 2026-09-16 printed "Deploy script completed successfully" with no silo deployed at all.
+    # The standalone -Include* path already counted it ($standaloneTotalErrors += ...).
+    It "Counts a skipped auth silo phase as an error outside the aggregation loop" {
+        $gateAssignments = $script:DeployAst.FindAll({
+            param($node)
+            $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+            $node.Operator -eq 'PlusEquals' -and
+            $node.Left.Extent.Text -eq '$totalErrors' -and
+            $node.Right.Extent.Text -match 'authSiloPrereqFailureCount'
+        }, $true)
+
+        @($gateAssignments).Count | Should -Be 1 `
+            -Because 'a feature that was skipped because its prerequisites failed is not a successful run'
     }
 }
