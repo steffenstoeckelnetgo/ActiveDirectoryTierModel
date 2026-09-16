@@ -373,8 +373,42 @@ Ordered. Items 1–3 are the actual acceptance gate.
 3. **Run PSScriptAnalyzer.** Not obtainable in the Linux container (absent from nuget.org;
    PowerShell Gallery and GitHub releases blocked by the network policy). It is a CI gate, so it
    must run somewhere before merge.
-4. **Coverage** against the CI population, ≥ 80%. Then update the README test table — it is
-   deliberately still at its last *measured* values rather than estimated.
+4. **Coverage** against the CI population, ≥ 80%. The population and the gate are in
+   `.github/workflows/ci.yml:133-136` and `:155-173`: `modules/TierModel/*.psm1`,
+   `modules/TierModel/public/*.ps1`, `optional/Update-TierModelMembership.ps1`.
+
+   **Linux floor, measured on `4812e17`: 78.35% (13472 of 17195 commands), with 1719 of 2082
+   tests passing.** That is a *lower bound*, not the CI number: the 363 tests that cannot run
+   off Windows are exactly the ones that would execute the SID-dependent paths, so every
+   command they reach is counted as missed. It says the real figure is somewhere above 78.35%
+   — it does **not** say the gate passes.
+
+   The authoritative number has to come from the Windows lab, with the CI configuration
+   reproduced verbatim (run it as `pwsh -NonInteractive`, or the suite stops at the
+   `-PreferredDc` prompt — see item 2):
+
+   ```powershell
+   Import-Module Pester -MinimumVersion 5.0.0 -MaximumVersion 5.99.99
+   $c = [PesterConfiguration]::Default
+   $c.Run.Path                  = './tests'
+   $c.Run.PassThru              = $true
+   $c.CodeCoverage.Enabled      = $true
+   $c.CodeCoverage.Path         = "modules/TierModel/*.psm1","modules/TierModel/public/*.ps1","optional/Update-TierModelMembership.ps1"
+   $c.CodeCoverage.OutputFormat = 'JaCoCo'
+   $c.CodeCoverage.OutputPath   = 'coverage.xml'
+   $r = Invoke-Pester -Configuration $c
+   '{0}% ({1} / {2})' -f [math]::Round(($r.CodeCoverage.CommandsExecutedCount / $r.CodeCoverage.CommandsAnalyzedCount) * 100, 2),
+       $r.CodeCoverage.CommandsExecutedCount, $r.CodeCoverage.CommandsAnalyzedCount
+   ```
+
+   If Windows also lands below 80%, the commands missed on Linux cluster in a short list, and
+   it is the place to start rather than a guess: `Test-TierModelPrerequisites.ps1` (485),
+   `New-TierModelOu.ps1` (478), `optional/Update-TierModelMembership.ps1` (414),
+   `Repair-TierModelCanonicalAcl.ps1` (182), `Test-TierModelAdmx.ps1` (140),
+   `TierModel.psm1` (137). Those counts are themselves Linux figures and shrink on Windows.
+
+   Then update the README test table — it is deliberately still at its last *measured* values
+   rather than estimated.
 5. **Add the completeness tests** designed but not yet written (`specs/008-german-language-support/plan.md`,
    phase D): every principal in the real config must resolve by a defined path; English and
    German fixtures must produce **identical SID sets**, both at the resolver and in the generated
