@@ -851,9 +851,26 @@ Describe "Authentication Silo Deploy Operations" -Tag "Unit", "AuthSilo" {
                     'msDS-AssignedAuthNPolicySilo' = $null
                 }
             }
+            # Computer groups are expanded by SID, so the group mocks are keyed by SID.
+            # Literals inside the mock body (a -ModuleName mock runs in the module's session
+            # state, where this file's $script: scope does not exist).
+            Mock Resolve-TierModelPrincipalSid -ModuleName TierModel {
+                param($Principal)
+                $map = @{
+                    'Domain Controllers' = 'S-1-5-21-111-222-333-516'
+                    'Tier0PAWDevices'    = 'S-1-5-21-111-222-333-1102'
+                    'TestComputerGroup'  = 'S-1-5-21-111-222-333-1150'
+                    'EmptyGroup'         = 'S-1-5-21-111-222-333-1151'
+                }
+                if ($map.ContainsKey("$Principal")) {
+                    [PSCustomObject]@{ Principal = "$Principal"; Sid = $map["$Principal"]; Source = 'CanonicalDomainRid'; Success = $true; Error = $null }
+                } else {
+                    [PSCustomObject]@{ Principal = "$Principal"; Sid = "S-1-5-21-111-222-333-9999"; Source = 'ADGroup'; Success = $true; Error = $null }
+                }
+            }
             Mock Get-ADGroupMember -ModuleName TierModel {
                 param($Identity)
-                if ("$Identity" -eq 'Tier0PAWDevices') {
+                if ("$Identity" -eq 'S-1-5-21-111-222-333-1102') {
                     @([PSCustomObject]@{ SamAccountName = 'PAW01$'; DistinguishedName = 'CN=PAW01,OU=PAWs,DC=test,DC=local'; objectClass = 'computer' })
                 } else {
                     @()
@@ -1127,7 +1144,29 @@ Describe "Authentication Silo Deploy Operations" -Tag "Unit", "AuthSilo" {
     Context "Test-TierModelAuthSiloPrerequisite — prerequisite validation" {
 
         BeforeAll {
-            # Default: all groups exist
+            # The gate resolves each configured name to a SID first and then reads THAT back,
+            # so the directory mock is keyed by SID, not by name. Literals inside the mock
+            # body: a -ModuleName mock runs in the module's session state, where this file's
+            # $script: scope does not exist.
+            Mock Resolve-TierModelPrincipalSid -ModuleName TierModel {
+                param($Principal)
+                $map = @{
+                    'Domain Controllers'           = 'S-1-5-21-111-222-333-516'
+                    'Read-only Domain Controllers' = 'S-1-5-21-111-222-333-521'
+                    'Tier0MemberServers'           = 'S-1-5-21-111-222-333-1101'
+                    'Tier0PAWDevices'              = 'S-1-5-21-111-222-333-1102'
+                    'Tier1MemberServers'           = 'S-1-5-21-111-222-333-1103'
+                    'Tier1PAWDevices'              = 'S-1-5-21-111-222-333-1104'
+                    'Tier2PAWDevices'              = 'S-1-5-21-111-222-333-1105'
+                    'Tier2EUDDevices'              = 'S-1-5-21-111-222-333-1106'
+                }
+                if ($map.ContainsKey("$Principal")) {
+                    [PSCustomObject]@{ Principal = "$Principal"; Sid = $map["$Principal"]; Source = 'CanonicalDomainRid'; Success = $true; Error = $null }
+                } else {
+                    [PSCustomObject]@{ Principal = "$Principal"; Sid = $null; Source = 'Failed'; Success = $false; Error = "not found" }
+                }
+            }
+            # Default: every resolved SID exists and is a group
             Mock Get-ADGroup  -ModuleName TierModel {
                 param($Identity)
                 [PSCustomObject]@{ Name = "$Identity"; DistinguishedName = "CN=$Identity,OU=Groups,DC=test,DC=local" }
@@ -1149,10 +1188,11 @@ Describe "Authentication Silo Deploy Operations" -Tag "Unit", "AuthSilo" {
         }
 
         It "Passed=false and failure message names the missing device group" {
+            # The group's SID resolves but the directory does not serve that object.
             $missingGroup = 'Tier0PAWDevices'
             Mock Get-ADGroup -ModuleName TierModel {
                 param($Identity)
-                if ("$Identity" -eq 'Tier0PAWDevices') { throw "Group not found: $Identity" }
+                if ("$Identity" -eq 'S-1-5-21-111-222-333-1102') { throw "Group not found: $Identity" }
                 [PSCustomObject]@{ Name = "$Identity" }
             }
             $result = Test-TierModelAuthSiloPrerequisite -Config $script:AuthSiloConfig -DomainController $script:TestDC
@@ -1164,7 +1204,7 @@ Describe "Authentication Silo Deploy Operations" -Tag "Unit", "AuthSilo" {
             $missingGroup = 'Domain Controllers'
             Mock Get-ADGroup -ModuleName TierModel {
                 param($Identity)
-                if ("$Identity" -eq 'Domain Controllers') { throw "Group not found: $Identity" }
+                if ("$Identity" -eq 'S-1-5-21-111-222-333-516') { throw "Group not found: $Identity" }
                 [PSCustomObject]@{ Name = "$Identity" }
             }
             $result = Test-TierModelAuthSiloPrerequisite -Config $script:AuthSiloConfig -DomainController $script:TestDC
@@ -1173,10 +1213,12 @@ Describe "Authentication Silo Deploy Operations" -Tag "Unit", "AuthSilo" {
         }
 
         It "does NOT check user accounts — Get-ADUser is never called" {
-            # Mock throws if called; clean config means it must not be called
+            # Asserted, not inferred from a throwing mock: Resolve-ADPrincipalSid tries
+            # Get-ADUser and SWALLOWS the failure, so relying on the mock's exception to
+            # surface would have left this test green while proving nothing.
             $result = Test-TierModelAuthSiloPrerequisite -Config $script:AuthSiloConfig -DomainController $script:TestDC
-            # If Get-ADUser was called, the test would have thrown above; reaching here proves it was not
             $result | Should -Not -BeNullOrEmpty
+            Should -Invoke Get-ADUser -ModuleName TierModel -Times 0 -Exactly
         }
 
         It "Passed=false when no group references exist (empty/null config)" {
@@ -1476,10 +1518,27 @@ Describe "Authentication Silo Deploy Operations" -Tag "Unit", "AuthSilo" {
 
             $script:AuditPawDn = 'CN=TestPAW01,OU=PAWs,DC=test,DC=local'
 
+            # Computer groups are expanded by SID, so the group mocks are keyed by SID.
+            # Literals inside the mock body (a -ModuleName mock runs in the module's session
+            # state, where this file's $script: scope does not exist).
+            Mock Resolve-TierModelPrincipalSid -ModuleName TierModel {
+                param($Principal)
+                $map = @{
+                    'Domain Controllers' = 'S-1-5-21-111-222-333-516'
+                    'Tier0PAWDevices'    = 'S-1-5-21-111-222-333-1102'
+                    'TestComputerGroup'  = 'S-1-5-21-111-222-333-1150'
+                    'EmptyGroup'         = 'S-1-5-21-111-222-333-1151'
+                }
+                if ($map.ContainsKey("$Principal")) {
+                    [PSCustomObject]@{ Principal = "$Principal"; Sid = $map["$Principal"]; Source = 'CanonicalDomainRid'; Success = $true; Error = $null }
+                } else {
+                    [PSCustomObject]@{ Principal = "$Principal"; Sid = "S-1-5-21-111-222-333-9999"; Source = 'ADGroup'; Success = $true; Error = $null }
+                }
+            }
             Mock Get-ADGroupMember -ModuleName TierModel {
                 param($Identity)
-                if ("$Identity" -eq 'TestComputerGroup') {
-                    @([PSCustomObject]@{ SamAccountName = 'TestPAW01$'; DistinguishedName = $script:AuditPawDn; objectClass = 'computer' })
+                if ("$Identity" -eq 'S-1-5-21-111-222-333-1150') {
+                    @([PSCustomObject]@{ SamAccountName = 'TestPAW01$'; DistinguishedName = 'CN=TestPAW01,OU=PAWs,DC=test,DC=local'; objectClass = 'computer' })
                 } else { @() }
             }
         }
@@ -1689,9 +1748,26 @@ Describe "Authentication Silo Deploy Operations" -Tag "Unit", "AuthSilo" {
                     'msDS-AssignedAuthNPolicySilo' = $null
                 }
             }
+            # Computer groups are expanded by SID, so the group mocks are keyed by SID.
+            # Literals inside the mock body (a -ModuleName mock runs in the module's session
+            # state, where this file's $script: scope does not exist).
+            Mock Resolve-TierModelPrincipalSid -ModuleName TierModel {
+                param($Principal)
+                $map = @{
+                    'Domain Controllers' = 'S-1-5-21-111-222-333-516'
+                    'Tier0PAWDevices'    = 'S-1-5-21-111-222-333-1102'
+                    'TestComputerGroup'  = 'S-1-5-21-111-222-333-1150'
+                    'EmptyGroup'         = 'S-1-5-21-111-222-333-1151'
+                }
+                if ($map.ContainsKey("$Principal")) {
+                    [PSCustomObject]@{ Principal = "$Principal"; Sid = $map["$Principal"]; Source = 'CanonicalDomainRid'; Success = $true; Error = $null }
+                } else {
+                    [PSCustomObject]@{ Principal = "$Principal"; Sid = "S-1-5-21-111-222-333-9999"; Source = 'ADGroup'; Success = $true; Error = $null }
+                }
+            }
             Mock Get-ADGroupMember -ModuleName TierModel {
                 param($Identity)
-                if ("$Identity" -eq 'Tier0PAWDevices') {
+                if ("$Identity" -eq 'S-1-5-21-111-222-333-1102') {
                     @([PSCustomObject]@{ SamAccountName = 'PAW01$'; DistinguishedName = 'CN=PAW01,OU=PAWs,DC=test,DC=local'; objectClass = 'computer' })
                 } else {
                     @()
@@ -1835,6 +1911,157 @@ Describe "Authentication Silo Deploy Operations" -Tag "Unit", "AuthSilo" {
             $result = Get-TierModelAuthSiloMembershipFd -Config $script:MembershipPlanCfg -DomainController $script:TestDC
             @($result.Actions).Count  | Should -Be 0
             ($result.Errors | Where-Object { $_.Code -eq 'AuthSiloMembershipFdPlanFailed' }) | Should -Not -BeNullOrEmpty
+        }
+    }
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # Localized directory — built-in groups are never looked up by English name
+    # ═══════════════════════════════════════════════════════════════════════════
+    #
+    # Reproduces the German lab run of 2026-09-16, where the prerequisite gate stopped the
+    # whole silo phase with
+    #     Unter "DC=int,DC=promiseIT,DC=de" kann kein Objekt mit der ID
+    #     "Domain Controllers" gefunden werden.
+    # because the auth-silo chain passed the CONFIG name straight to -Identity. A German
+    # directory serves "Domänencontroller"; the English name in config/*.json is a canonical
+    # identifier, not a directory name (CLAUDE.md rule 2.4).
+    #
+    # The directory fixture below THROWS for every -Identity that is not a SID, exactly as the
+    # live German DC did, and answers only for <domainSid>-<RID>.
+    #
+    # Resolve-TierModelPrincipalSid is MOCKED here rather than exercised: its canonical RID
+    # composition normalises through ConvertTo-TierModelSidString, which constructs a
+    # [SecurityIdentifier] and therefore cannot run on Linux at all. The resolver has its own
+    # acceptance gate (tests/Unit.CanonicalPrincipal.Tests.ps1, 59 of 59 against a German
+    # directory). What was untested before these cases is whether the auth-silo call sites
+    # USE it — which is precisely the defect the lab run exposed.
+    Context "Localized directory — auth silo groups are resolved by SID" {
+
+        BeforeAll {
+            # Literals, not $script: variables: a -ModuleName mock body runs in the module's
+            # session state, where the test file's $script: scope does not exist (it would
+            # silently read as $null and send the code down a fallback path).
+            Mock Resolve-TierModelPrincipalSid -ModuleName TierModel {
+                param($Principal)
+                $map = @{
+                    'Domain Controllers'           = 'S-1-5-21-111-222-333-516'
+                    'Read-only Domain Controllers' = 'S-1-5-21-111-222-333-521'
+                    'Tier0MemberServers'           = 'S-1-5-21-111-222-333-1101'
+                    'Tier0PAWDevices'              = 'S-1-5-21-111-222-333-1102'
+                    'Tier1MemberServers'           = 'S-1-5-21-111-222-333-1103'
+                    'Tier1PAWDevices'              = 'S-1-5-21-111-222-333-1104'
+                    'Tier2PAWDevices'              = 'S-1-5-21-111-222-333-1105'
+                    'Tier2EUDDevices'              = 'S-1-5-21-111-222-333-1106'
+                }
+                if ($map.ContainsKey("$Principal")) {
+                    [PSCustomObject]@{ Principal = "$Principal"; Sid = $map["$Principal"]; Source = 'CanonicalDomainRid'; Success = $true; Error = $null }
+                } else {
+                    [PSCustomObject]@{ Principal = "$Principal"; Sid = $null; Source = 'Failed'; Success = $false; Error = "not found" }
+                }
+            }
+
+            # The German directory: an English built-in name resolves to nothing.
+            Mock Get-ADGroup -ModuleName TierModel {
+                param($Identity)
+                if ("$Identity" -notmatch '^S-\d+-\d+') {
+                    throw "Cannot find an object with identity: '$Identity' under: 'DC=test,DC=local'."
+                }
+                [PSCustomObject]@{ Name = 'Domänencontroller'; SID = "$Identity"; ObjectClass = 'group' }
+            }
+            Mock Get-ADGroupMember -ModuleName TierModel {
+                param($Identity)
+                if ("$Identity" -notmatch '^S-\d+-\d+') {
+                    throw "Cannot find an object with identity: '$Identity' under: 'DC=test,DC=local'."
+                }
+                @()
+            }
+            Mock Get-ADAuthenticationPolicySilo -ModuleName TierModel {
+                param($Identity)
+                [PSCustomObject]@{ Name = "$Identity"; Members = @(); Description = 'x'
+                                   Enforce = $false; ProtectedFromAccidentalDeletion = $true
+                                   UserAuthenticationPolicy = 'P'; ComputerAuthenticationPolicy = 'P'
+                                   ServiceAuthenticationPolicy = 'P' }
+            }
+
+            # Single silo referencing the built-in that the German lab run failed on.
+            $script:LocalizedSiloCfg = [PSCustomObject]@{
+                authenticationSilos = @(
+                    [PSCustomObject]@{
+                        name                 = 'T0 Silo'
+                        description          = 'x'
+                        policy               = 'P'
+                        memberComputerGroups = @('Domain Controllers')
+                    }
+                )
+            }
+        }
+
+        It "prerequisite gate passes against a directory that serves no English built-in name" {
+            $result = Test-TierModelAuthSiloPrerequisite -Config $script:AuthSiloConfig -DomainController $script:TestDC
+            $result.Passed            | Should -BeTrue
+            @($result.Failures).Count | Should -Be 0
+            $result.Checked           | Should -Be 8
+        }
+
+        It "prerequisite gate never passes a configuration name to Get-ADGroup" {
+            Test-TierModelAuthSiloPrerequisite -Config $script:AuthSiloConfig -DomainController $script:TestDC | Out-Null
+            Should -Invoke Get-ADGroup -ModuleName TierModel -Times 0 -Exactly -ParameterFilter { "$Identity" -eq 'Domain Controllers' }
+            Should -Invoke Get-ADGroup -ModuleName TierModel -Times 0 -Exactly -ParameterFilter { "$Identity" -eq 'Read-only Domain Controllers' }
+        }
+
+        It "prerequisite gate reads the built-ins back by their composed SID" {
+            # Anti-vacuity for the two assertions above: they would also hold if the gate
+            # stopped reading the directory altogether.
+            Test-TierModelAuthSiloPrerequisite -Config $script:AuthSiloConfig -DomainController $script:TestDC | Out-Null
+            Should -Invoke Get-ADGroup -ModuleName TierModel -Times 1 -Exactly -ParameterFilter { "$Identity" -eq 'S-1-5-21-111-222-333-516' }
+            Should -Invoke Get-ADGroup -ModuleName TierModel -Times 1 -Exactly -ParameterFilter { "$Identity" -eq 'S-1-5-21-111-222-333-521' }
+        }
+
+        It "prerequisite gate still rejects a principal the resolver cannot resolve" {
+            $cfg = [PSCustomObject]@{
+                authenticationSilos = @([PSCustomObject]@{ name = 'T0 Silo'; memberComputerGroups = @('NoSuchGroup') })
+            }
+            $result = Test-TierModelAuthSiloPrerequisite -Config $cfg -DomainController $script:TestDC
+            $result.Passed | Should -BeFalse
+            ($result.Failures | Where-Object { $_ -match 'NoSuchGroup' }) | Should -Not -BeNullOrEmpty
+        }
+
+        It "prerequisite gate still rejects a principal that resolves but is not a group" {
+            # The resolver tries Get-ADUser BEFORE Get-ADGroup (Resolve-ADPrincipalSid), so a
+            # user account carrying a group's name would resolve. The class check is what stops
+            # it, and it must survive the switch to SID-based lookup.
+            Mock Get-ADGroup -ModuleName TierModel { throw "Cannot find an object with identity: '$Identity'." }
+            $cfg = [PSCustomObject]@{
+                authenticationSilos = @([PSCustomObject]@{ name = 'T0 Silo'; memberComputerGroups = @('Tier0PAWDevices') })
+            }
+            $result = Test-TierModelAuthSiloPrerequisite -Config $cfg -DomainController $script:TestDC
+            $result.Passed | Should -BeFalse
+        }
+
+        It "Set-TierModelAuthSiloMembership expands the built-in group by SID" {
+            Set-TierModelAuthSiloMembership -Config $script:LocalizedSiloCfg -DomainController $script:TestDC -Confirm:$false | Out-Null
+            Should -Invoke Get-ADGroupMember -ModuleName TierModel -Times 0 -Exactly -ParameterFilter { "$Identity" -eq 'Domain Controllers' }
+            Should -Invoke Get-ADGroupMember -ModuleName TierModel -Times 1 -Exactly -ParameterFilter { "$Identity" -eq 'S-1-5-21-111-222-333-516' }
+        }
+
+        It "Get-TierModelAuthSiloMembershipFd expands the built-in group by SID" {
+            Get-TierModelAuthSiloMembershipFd -Config $script:LocalizedSiloCfg -DomainController $script:TestDC | Out-Null
+            Should -Invoke Get-ADGroupMember -ModuleName TierModel -Times 0 -Exactly -ParameterFilter { "$Identity" -eq 'Domain Controllers' }
+            Should -Invoke Get-ADGroupMember -ModuleName TierModel -Times 1 -Exactly -ParameterFilter { "$Identity" -eq 'S-1-5-21-111-222-333-516' }
+        }
+
+        It "Test-TierModelAuthSilo expands the built-in group by SID" {
+            Test-TierModelAuthSilo -Config $script:LocalizedSiloCfg -DomainController $script:TestDC -Silent | Out-Null
+            Should -Invoke Get-ADGroupMember -ModuleName TierModel -Times 0 -Exactly -ParameterFilter { "$Identity" -eq 'Domain Controllers' }
+            Should -Invoke Get-ADGroupMember -ModuleName TierModel -Times 1 -Exactly -ParameterFilter { "$Identity" -eq 'S-1-5-21-111-222-333-516' }
+        }
+
+        It "the audit reports no membership issue when the group expands — not a false NonCompliant" {
+            # Before the fix the expansion threw and Test-TierModelAuthSilo turned that into a
+            # compliance issue string, so a German domain audited as NonCompliant on principle.
+            $result = Test-TierModelAuthSilo -Config $script:LocalizedSiloCfg -DomainController $script:TestDC -Silent
+            $f = $result.Findings | Select-Object -First 1
+            @($f.Issues | Where-Object { $_ -match 'Cannot expand computer group' }).Count | Should -Be 0
         }
     }
 }

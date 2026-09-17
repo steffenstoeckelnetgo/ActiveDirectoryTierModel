@@ -161,6 +161,70 @@ The deployment and audit scripts handle these operations automatically:
 5. Monitor post-import GPO processing performance
 6. Restrict import capability to least-privilege admin groups
 
+## Adding a language to the central store (e.g. German)
+
+ADMX files are language-neutral. The strings an administrator reads in the Group Policy
+editor live in per-language **ADML** files under `PolicyDefinitions\<language>`. Only
+`en-US` ships with this repository.
+
+On a German admin host, a central store containing only `en-US` makes the Group Policy
+editor report *"resource not found"* for every ADMX-backed setting. The policies still
+apply correctly — only the editor cannot render them — but it makes the deployment
+effectively unmaintainable for that administrator.
+
+Everything on the code side is already in place: `Deploy-TierModel.ps1` and
+`Audit-TierModel.ps1` accept `-AdmlLanguage` and load
+`config\tiermodel-adml-<language>.json`. What is missing is the content, because the
+ADML files are Microsoft redistributables that this repository does not carry.
+
+### Procedure
+
+1. **Identify the sources.** Every entry in `config/tiermodel-adml-en-US.json` records a
+   `downloadLink`. There are three: the Windows 11 Administrative Templates, the
+   Microsoft 365 Apps Administrative Templates, and the Microsoft Edge policy templates.
+
+2. **Download each one in the target language** and install or extract it.
+
+3. **Collect the `.adml` files** from each package's `<language>` folder into one folder,
+   keeping the same file names as `config\admx\en-US`.
+
+4. **Generate the manifest:**
+
+   ```powershell
+   .\optional\New-TierModelAdmlManifest.ps1 -Language de-DE -SourcePath 'C:\ADMX\de-DE'
+   ```
+
+   This computes the MD5 hash of each file and writes
+   `config\tiermodel-adml-de-DE.json` in the same shape as the `en-US` manifest,
+   inheriting each entry's `comment` and `downloadLink` from it so provenance is
+   preserved. It warns about any file present in `en-US` that has no counterpart, so a
+   partial drop is visible before it reaches SYSVOL.
+
+5. **Place the files** in `config\admx\de-DE\` and deploy:
+
+   ```powershell
+   .\Deploy-TierModel.ps1 -AdmlLanguage de-DE   # plus your usual parameters
+   ```
+
+### Keeping English alongside
+
+A central store can hold several language folders at once, which is the usual case when
+German administrators and English tooling share one domain. Deploy each language in its
+own run:
+
+```powershell
+.\Deploy-TierModel.ps1 -IncludeAdmx -AdmlLanguage en-US
+.\Deploy-TierModel.ps1 -IncludeAdmx -AdmlLanguage de-DE
+```
+
+The ADMX files themselves are written once and are identical for both; only the ADML
+folder differs.
+
+> **Note on the directory language.** This is the only part of the Tier Model where
+> language is a content question. Built-in Active Directory principals are resolved by
+> well-known SID, so a localized domain needs no configuration changes at all — see
+> [Language Support](language-support.md).
+
 ## Future Enhancements
 - Template hash comparison for update detection
 - Multi-locale synchronization strategy

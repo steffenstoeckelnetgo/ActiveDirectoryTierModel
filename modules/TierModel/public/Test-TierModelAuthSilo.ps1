@@ -160,7 +160,14 @@ function Test-TierModelAuthSilo {
             $expectedMemberDns = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
             foreach ($groupName in @($silo.memberComputerGroups)) {
                 try {
-                    $members = @(Get-ADGroupMember -Identity $groupName -Recursive -Server $DomainController -ErrorAction Stop |
+                    # Expand by SID, never by the configured name: 'Domain Controllers' and
+                    # 'Read-only Domain Controllers' are localized in the directory. Asking for
+                    # the English name on a German domain threw, and this catch turned that into
+                    # a compliance issue - so the audit reported drift that did not exist
+                    # (CLAUDE.md rule 2.4).
+                    $resolvedGroup = Resolve-TierModelGroupIdentity -GroupName $groupName -DomainController $DomainController -CorrelationId $CorrelationId
+                    if (-not $resolvedGroup.Success) { throw $resolvedGroup.Error }
+                    $members = @(Get-ADGroupMember -Identity $resolvedGroup.Identity -Recursive -Server $DomainController -ErrorAction Stop |
                         Where-Object { $_.objectClass -eq 'computer' })
                     foreach ($m in $members) {
                         $expectedMemberDns.Add($m.DistinguishedName) | Out-Null

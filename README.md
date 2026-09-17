@@ -34,7 +34,7 @@ To get started with TierModel, please refer to our comprehensive documentation:
 - **[CI/CD Integration](https://microsoft.github.io/ActiveDirectoryTierModel/ci-cd/)** - Pipeline integration and automation
 - **[Test Tag Matrix](https://microsoft.github.io/ActiveDirectoryTierModel/test-tag-matrix/)** - Pester test organization
 - **[Test Coverage](https://microsoft.github.io/ActiveDirectoryTierModel/test-coverage/)** - Comprehensive test coverage analysis and roadmap
-- **[Language Support](https://microsoft.github.io/ActiveDirectoryTierModel/language-support/)** - Supported languages (English only today) and the localization roadmap
+- **[Language Support](https://microsoft.github.io/ActiveDirectoryTierModel/language-support/)** - Running against a localized (e.g. German) Active Directory: built-in principals resolve by well-known SID, so one configuration set works in any language
 - **[Sentinel Monitoring](https://microsoft.github.io/ActiveDirectoryTierModel/sentinel-monitoring/)** - Out-of-the-box Microsoft Sentinel monitoring for a deployed Tier Model (Content Hub solution)
 - **[Event ID Schema](https://microsoft.github.io/ActiveDirectoryTierModel/event-id-schema/)** - Windows Event Log schema for SIEM integration and operational monitoring
 
@@ -138,7 +138,7 @@ cd ActiveDirectoryTierModel
 - **Elevation**: Administrator privileges required
 - **Domain Admin**: Membership in Domain Admins group
 - **Modules**: ActiveDirectory, GroupPolicy (see `config/dependencies.json`)
-- **Language**: English (`en-US`) only — both the **host OS** (the machine you run the scripts from) and **Active Directory** must be English (see [Language Support](https://microsoft.github.io/ActiveDirectoryTierModel/language-support/))
+- **Language**: any — the **host OS** and **Active Directory** may be installed in any language. Built-in principals resolve by well-known SID rather than by directory name, so one configuration set works everywhere; the host and directory language are recorded as diagnostics and never block a run. `en-US` and `de-DE` are the regression-tested combinations (see [Language Support](https://microsoft.github.io/ActiveDirectoryTierModel/language-support/))
 
 *For detailed prerequisite validation, run `Test-TierModelPrerequisites`*
 

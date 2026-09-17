@@ -3006,14 +3006,23 @@ Describe 'Deploy-TierModel - Coverage Gap Closing Round 2' {
         $output | Should -Match 'Successfully deployed'
     }
 
-    It 'Should display Converged in FullDeployment consolidated results after all phases execute' {
-        # Covers line 1583: "Converged: $overallConverged" in consolidated deployment results
+    # NOTE: this case asserts Converged: FALSE after a run that applied changes, and that is
+    # deliberate - it used to assert True. The consolidated summary derives Converged from its
+    # own totals ($totalApplied -eq 0 -and $totalErrors -eq 0) instead of AND-ing the results'
+    # own Converged flags, because those flags mean "nothing was applied" in New-TierModelOu and
+    # New-TierModelGroup and "nothing failed" in every other executor. Under the old AND, a run
+    # that created 146 GPOs, 60 ADMX files and 17 Windows LAPS ACEs printed "Converged: True" as
+    # long as no OU and no group changed - which is exactly how a permanently non-idempotent
+    # phase would stay invisible. Constitution principle III measures convergence in changes.
+    # The default mocks in this file apply one action per phase, so do not relax this back.
+    It 'Should report Converged False in FullDeployment consolidated results when actions were applied' {
         Mock Read-Host { return 'Y' }
 
         $output = & $script:DeployScriptPath -PreferredDc $script:TestPreferredDc -FullDeployment -ConfirmApply -ErrorAction Stop 6>&1 | Out-String
 
         $output | Should -Match 'Full deployment execution completed'
-        $output | Should -Match 'Converged: True'
+        $output | Should -Match 'Errors: 0'
+        $output | Should -Match 'Converged: False'
     }
 
     # -------------------------------------------------------------------------
@@ -3510,5 +3519,184 @@ Describe 'Deploy-TierModel - Diagnostics never-prompt guarantee (D8 / FR-007)' {
 
         $consoleOutput | Should -Match 'Re-run with the following for full diagnostics'
         $consoleOutput | Should -Match "-OutputFileBase 'Deploy-TierModel'"
+    }
+}
+
+Describe "Deploy-TierModel Consolidated Result Counting" -Tag "Integration", "Deploy", "Reporting" {
+
+    BeforeAll {
+        $script:DeployScriptPath = Join-Path $PSScriptRoot '..\Deploy-TierModel.ps1'
+        $script:DeployAst = [System.Management.Automation.Language.Parser]::ParseFile(
+            $script:DeployScriptPath, [ref]$null, [ref]$null)
+
+        # The invariant is per-RESULT: inside the aggregation loop each result contributes to
+        # each total exactly once. Contributions from outside the loop (the auth silo
+        # prerequisite gate, which publishes none of the three result shapes) are a different
+        # source and are asserted separately below.
+        $script:AggregationLoop = $script:DeployAst.FindAll({
+            param($node)
+            $node -is [System.Management.Automation.Language.ForEachStatementAst] -and
+            $node.Condition.Extent.Text -eq '$allResults'
+        }, $true) | Select-Object -First 1
+    }
+
+    # The GPO deployment result publishes BOTH an Errors array and a Failed integer for the same
+    # failures, and the consolidated summary used to add both: two failed GPO actions printed
+    # "Errors: 4" on the German lab run (2026-09-15). Applied/Executed overlap the same way.
+    # Asserted on the AST rather than by running a deployment, because this summary block only
+    # executes at the end of a full -ConfirmApply run against a live directory.
+
+    It "Has exactly one result-aggregation loop to assert against" {
+        # Anti-vacuity for every assertion below: they all search inside this node.
+        $script:AggregationLoop | Should -Not -BeNullOrEmpty
+        $script:AggregationLoop.Variable.Extent.Text | Should -Be '$result'
+    }
+
+    It "Counts each result's failures from exactly one source" {
+        $assignments = $script:AggregationLoop.FindAll({
+            param($node)
+            $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+            $node.Operator -eq 'PlusEquals' -and
+            $node.Left.Extent.Text -eq '$totalErrors'
+        }, $true)
+
+        @($assignments).Count | Should -Be 1 `
+            -Because 'a second += on $totalErrors inside the loop would count the same failures twice, as Errors.Count + Failed did'
+    }
+
+    It "Counts each result's applied actions from exactly one source" {
+        $assignments = $script:AggregationLoop.FindAll({
+            param($node)
+            $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+            $node.Operator -eq 'PlusEquals' -and
+            $node.Left.Extent.Text -eq '$totalApplied'
+        }, $true)
+
+        @($assignments).Count | Should -Be 1 `
+            -Because 'Applied, Executed and Summary.Successful describe the same actions on results that publish more than one of them'
+    }
+
+    It "Still reads all three result shapes" {
+        # Anti-vacuity: the two assertions above would also pass if the counting were deleted
+        # outright. The fallback chain has to remain, because the result objects genuinely differ:
+        # integers on the execution results, arrays on the plan-shaped ones.
+        $errorAssignment = $script:AggregationLoop.FindAll({
+            param($node)
+            $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+            $node.Operator -eq 'PlusEquals' -and
+            $node.Left.Extent.Text -eq '$totalErrors'
+        }, $true) | Select-Object -First 1
+
+        $errorAssignment | Should -Not -BeNullOrEmpty
+        $errorAssignment.Right.Extent.Text | Should -Match "'Failed'"
+        $errorAssignment.Right.Extent.Text | Should -Match "'Errors'"
+        $errorAssignment.Right.Extent.Text | Should -Match "'Summary'"
+    }
+
+    # A failed -IncludeAuthSilos prerequisite gate skips the entire silo phase. In the
+    # -FullDeployment path that skip used to be invisible to the summary, so the German lab run
+    # of 2026-09-16 printed "Deploy script completed successfully" with no silo deployed at all.
+    # The standalone -Include* path already counted it ($standaloneTotalErrors += ...).
+    It "Counts a skipped auth silo phase as an error outside the aggregation loop" {
+        $gateAssignments = $script:DeployAst.FindAll({
+            param($node)
+            $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+            $node.Operator -eq 'PlusEquals' -and
+            $node.Left.Extent.Text -eq '$totalErrors' -and
+            $node.Right.Extent.Text -match 'authSiloPrereqFailureCount'
+        }, $true)
+
+        @($gateAssignments).Count | Should -Be 1 `
+            -Because 'a feature that was skipped because its prerequisites failed is not a successful run'
+    }
+}
+
+Describe 'Deploy-TierModel - Converged reflects changes, not only failures' -Tag 'Integration', 'Deploy', 'Reporting' {
+    # Both summaries used to AND the results' own Converged flags. Those flags carry two
+    # different meanings in the module - idempotency in New-TierModelOu/New-TierModelGroup,
+    # success everywhere else - so the AND was only as strict as whichever executor happened to
+    # run. Both now derive the flag from their own totals; these cases pin both directions so
+    # the derivation can neither drift back nor collapse into "always False".
+
+    BeforeEach {
+        Mock Read-Host { return 'Y' }
+    }
+
+    It 'Standalone -IncludeMsa reports Converged False after applying ACLs' {
+        # Every executor reachable from the standalone path reports Converged = $true (success
+        # sense), so the old AND printed True while four MSA ACEs had just been written.
+        $output = & $script:DeployScriptPath -PreferredDc $script:TestPreferredDc -IncludeMsa -ConfirmApply -ErrorAction Stop 6>&1 | Out-String
+
+        $output | Should -Match 'Applied: 4'
+        $output | Should -Match 'Errors: 0'
+        $output | Should -Match 'Converged: False'
+    }
+
+    It 'FullDeployment reports Converged True when the plan had actions but nothing was applied' {
+        # Anti-over-tightening: "we executed a phase" is not "we changed something". The OU
+        # result here even reports Converged = $false on its own, and zero applied with zero
+        # errors is still a converged run.
+        Mock Get-TierModelOu {
+            New-MockDeploymentPlan -EntityType 'OU' -TotalInConfig 2 -ToCreate 1 -ExistingCount 1
+        }
+        Mock New-TierModelOu {
+            New-MockDeploymentResult -EntityType 'OU' -AppliedCount 0 -Converged $false
+        }
+        Mock Get-TierModelGroupFd {
+            New-MockDeploymentPlan -EntityType 'Group' -TotalInConfig 2 -ToCreate 0 -ExistingCount 2
+        }
+        Mock Get-TierModelUserFd {
+            New-MockDeploymentPlan -EntityType 'User' -TotalInConfig 2 -ToCreate 0 -ExistingCount 2
+        }
+        Mock Get-TierModelGpoLinkFd {
+            [PSCustomObject]@{ Actions = @(); Errors = @(); Config = $null }
+        }
+        Mock Get-TierModelAdmx {
+            [PSCustomObject]@{
+                EntityType = 'ADMX'
+                Summary = [PSCustomObject]@{ TotalFiles = 2; FilesToUpdate = 0; FilesUpToDate = 2 }
+                Analysis = [PSCustomObject]@{ AdmxToUpdate = @(); AdmlToUpdate = @(); AdmxUpToDate = @(); AdmlUpToDate = @(); Errors = @() }
+                Warnings = @(); Errors = @()
+            }
+        }
+
+        $output = & $script:DeployScriptPath -PreferredDc $script:TestPreferredDc -FullDeployment -ConfirmApply -ErrorAction Stop 6>&1 | Out-String
+
+        $output | Should -Match 'Applied: 0'
+        $output | Should -Match 'Errors: 0'
+        $output | Should -Match 'Converged: True'
+    }
+
+    It 'Both summaries derive Converged from their own totals' {
+        # The shape, asserted on the AST: reading a result's Converged flag here is what made
+        # the printed value depend on which executor ran. Neither summary may do that again.
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+            $script:DeployScriptPath, [ref]$null, [ref]$null)
+
+        $derivations = $ast.FindAll({
+            param($node)
+            $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+            $node.Left.Extent.Text -in @('$overallConverged', '$standaloneConverged') -and
+            $node.Right.Extent.Text -match '-eq 0'
+        }, $true)
+
+        @($derivations).Count | Should -Be 2
+        foreach ($d in $derivations) {
+            $d.Right.Extent.Text | Should -Match 'TotalApplied -eq 0'
+            $d.Right.Extent.Text | Should -Match 'TotalErrors -eq 0'
+        }
+
+        # Anti-vacuity, and the actual regression guard. $overallConverged is also used inside
+        # Invoke-GpoDeployment, so it cannot be counted globally - but $standaloneConverged
+        # belongs to the standalone summary alone. Exactly one assignment means the eight
+        # "-not $result.Converged" writes that used to feed it are gone for good.
+        $standaloneWrites = $ast.FindAll({
+            param($node)
+            $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+            $node.Left.Extent.Text -eq '$standaloneConverged'
+        }, $true)
+
+        @($standaloneWrites).Count | Should -Be 1 `
+            -Because 'a per-result AND would reinstate "Converged: True" after applying changes'
     }
 }

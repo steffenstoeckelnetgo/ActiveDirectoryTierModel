@@ -51,7 +51,7 @@ function Write-TierModelLog {
         [switch]$PassThru
     )
     
-    $timestamp = Get-Date -Format 'yyyy-MM-ddTHH:mm:ss.fffZ'
+    $timestamp = (Get-Date).ToString('yyyy-MM-ddTHH:mm:ss.fffZ', [System.Globalization.CultureInfo]::InvariantCulture)
     $correlationId = if ($script:CorrelationId) { $script:CorrelationId } else { [Guid]::NewGuid().ToString() }
     
     # Add correlation ID to data if not already present

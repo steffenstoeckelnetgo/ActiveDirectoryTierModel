@@ -288,7 +288,7 @@ function Write-TierModelFailFast {
                 # The PowerShell-version gate fires BEFORE Import-Module, so the logger does not
                 # exist yet. Emit the identical JSON record directly rather than lose the failure.
                 $ffEntry = [PSCustomObject]@{
-                    Timestamp     = (Get-Date -Format 'yyyy-MM-ddTHH:mm:ss.fffZ')
+                    Timestamp     = ((Get-Date).ToString('yyyy-MM-ddTHH:mm:ss.fffZ', [System.Globalization.CultureInfo]::InvariantCulture))
                     Level         = 'Error'
                     Message       = $ffMessage
                     Data          = $ffData
@@ -671,7 +671,7 @@ if ($Logging -and -not $OutputFileBase) {
 $script:LogFilePath = $null
 $script:LogDirectory = $null
 if ($Logging) {
-    $logTimestamp = Get-Date -Format 'MMddyy-HHmm'
+    $logTimestamp = (Get-Date).ToString('MMddyy-HHmm', [System.Globalization.CultureInfo]::InvariantCulture)
     $logFileName = "$OutputFileBase-$logTimestamp.log"
 
     # Resolve the log DIRECTORY exactly once, then derive both the log file and the Debug\
@@ -830,7 +830,7 @@ if ($script:DiagnosticsEnabled) {
 # POC-3: a nested Start-Transcript is harmless, so there is deliberately no "is a transcript
 # already running" pre-check.
 if ($script:DiagnosticsEnabled -and $EnableVerbose -and $EnableDebug -and $script:DebugFolderPath) {
-    $transcriptStamp = Get-Date -Format 'MMddyy-HHmmss'
+    $transcriptStamp = (Get-Date).ToString('MMddyy-HHmmss', [System.Globalization.CultureInfo]::InvariantCulture)
     $candidateTranscript = Join-Path $script:DebugFolderPath "Audit-TierModel.transcript.$transcriptStamp.log"
     try {
         Start-Transcript -Path $candidateTranscript -Force -ErrorAction Stop | Out-Null
@@ -2537,7 +2537,7 @@ if ($activeScopeCount -eq 0 -and $activeIncludeCount -gt 0) {
 # Generate output file if requested
 $outputResult = $null
 if ($OutputFormat -and $OutputFileBase) {
-    $timestamp = Get-Date -Format 'MMddyy-HHmm'
+    $timestamp = (Get-Date).ToString('MMddyy-HHmm', [System.Globalization.CultureInfo]::InvariantCulture)
     $extension = switch ($OutputFormat) {
         'Text' { '.txt' }
         'Json' { '.json' }

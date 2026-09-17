@@ -129,7 +129,12 @@ function Set-TierModelAuthSiloMembership {
                 $computersToAssign = [System.Collections.Generic.List[object]]::new()
                 foreach ($groupName in @($silo.memberComputerGroups)) {
                     try {
-                        $members = @(Get-ADGroupMember -Identity $groupName -Recursive -Server $DomainController -ErrorAction Stop |
+                        # Expand by SID, never by the configured name: 'Domain Controllers' and
+                        # 'Read-only Domain Controllers' are localized in the directory, so the
+                        # English name matches nothing on a German domain (CLAUDE.md rule 2.4).
+                        $resolvedGroup = Resolve-TierModelGroupIdentity -GroupName $groupName -DomainController $DomainController -CorrelationId $CorrelationId
+                        if (-not $resolvedGroup.Success) { throw $resolvedGroup.Error }
+                        $members = @(Get-ADGroupMember -Identity $resolvedGroup.Identity -Recursive -Server $DomainController -ErrorAction Stop |
                             Where-Object { $_.objectClass -eq 'computer' })
                         foreach ($member in $members) {
                             $computersToAssign.Add($member)

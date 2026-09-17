@@ -15,6 +15,13 @@ Get-TierModelWinLapsAclFd + New-TierModelWinLapsAcl directly to verify:
 
 All AD / LAPS / GPO cmdlets are mocked — no live Active Directory.
 
+The SELF ACE fixtures below carry the SID 'S-1-5-10', not the name 'NT AUTHORITY\SELF'.
+Test-TierModelWinLapsAcl and Get-TierModelWinLapsAcl match SELF through
+ConvertTo-TierModelIdentitySid, which translates a name with the LOCAL machine's language:
+on German Windows 'NT AUTHORITY\SELF' does not translate at all (the account reads
+'NT-AUTORITAET\SELBST' there), so an English literal makes the SELF ACE look absent and the
+delegation look non-compliant. A SID is returned unchanged by that helper on every host.
+
 .NOTES
 Created : 2026-07-16
 Tags    : Integration, WinLaps
@@ -207,7 +214,7 @@ Describe "Integration: Windows LAPS Deployment Pipeline" -Tag "Integration", "Wi
             Mock Get-Acl -ModuleName TierModel {
                 param($Path, $ErrorAction)
                 $selfAce = [PSCustomObject]@{
-                    IdentityReference = [PSCustomObject]@{ Value = 'NT AUTHORITY\SELF' }
+                    IdentityReference = [PSCustomObject]@{ Value = 'S-1-5-10' }  # SELF, by SID: see the note at the top of this file
                     IsInherited       = $false
                     ObjectType        = [Guid]::Empty
                 }

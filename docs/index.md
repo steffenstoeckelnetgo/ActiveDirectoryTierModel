@@ -39,4 +39,4 @@ Welcome to the Active Directory Tier Model documentation.
 
 ## Reference
 
-- **[Language Support](https://microsoft.github.io/ActiveDirectoryTierModel/language-support/)** - Supported languages (English only today), the 18 fully-localized Windows Server languages, and the roadmap and challenges for community localization
+- **[Language Support](https://microsoft.github.io/ActiveDirectoryTierModel/language-support/)** - Running against a localized (e.g. German) Active Directory: built-in principals resolve by well-known SID, so one configuration set works in any language

@@ -1827,31 +1827,60 @@ Describe "New-TierModelGpo - GPO Creation Execution" -Tag "Unit", "GPO", "Create
         #       CommitChanges / success Write-Host) cannot be covered without production
         #       code changes because it uses [ADSI]$gpcAdsiPath — a direct .NET
         #       constructor that Pester cannot intercept. Any attempt to access
-        #       $gpc.ObjectSecurity in a non-AD environment throws, diverting execution
-        #       into the inner catch block. See Hard Coverage Limits in test-coverage.md.
+        #       $gpc.ObjectSecurity in a non-AD environment throws. See Hard Coverage
+        #       Limits in test-coverage.md.
+        #
+        #       That throw is now FATAL to the GPO action, and these tests pin that
+        #       contract. It used to be downgraded to a yellow console warning while the
+        #       action still counted as Executed = 1. The Deny-Apply ACE is what keeps a
+        #       tier-restriction GPO from ever applying to domain controllers, so a GPO
+        #       that deploys without it is a silently weakened tier boundary reported as
+        #       a success. Raising a failure here is deliberate; do not relax it back to
+        #       a warning without design sign-off (CONTRIBUTING.md, PR requirement 3).
 
-        It "Should enter denyApplyGroupPolicy loop and handle ADSI failure gracefully" {
-            # ADSI will fail with no real AD; execution falls into inner catch.
-            # The GPO should still be counted as executed (non-fatal ACL error).
+        It "Should fail the GPO action when the Deny-Apply ACE cannot be written" {
+            # The principal resolves, so the failure comes from the [ADSI] bind that
+            # follows — exactly the case the old contract swallowed.
+            Mock Resolve-TierModelPrincipalSid -ModuleName TierModel {
+                return [PSCustomObject]@{ Success = $true; Sid = 'S-1-5-32-544'; Error = $null }
+            }
+
             $result = New-TierModelGpo -Plan (New-GpoPlan -Actions @(
                 New-CreateAction -Name "DenyAclGPO" -Extra @{
                     denyApplyGroupPolicy = @("TierAdmins")
                 }
             )) -DomainController "DC01"
 
-            $result.Executed | Should -Be 1
-            $result.Failed   | Should -Be 0
+            $result.Executed  | Should -Be 0
+            $result.Failed    | Should -Be 1
+            $result.Converged | Should -Be $false
+
+            # Anti-vacuity: the failure must come from the Deny-Apply path and name the
+            # group, not from some other step of GPO creation that also throws here.
+            @($result.Errors).Count      | Should -Be 1
+            @($result.Errors)[0].Code    | Should -Be 'GPOCreationFailed'
+            @($result.Errors)[0].Message | Should -Match "Deny-Apply ACL for 'TierAdmins'"
         }
 
-        It "Should process multiple denyApply groups and remain non-fatal for each" {
+        It "Should stop at the first Deny-Apply failure instead of continuing with the rest" {
+            Mock Resolve-TierModelPrincipalSid -ModuleName TierModel {
+                return [PSCustomObject]@{ Success = $true; Sid = 'S-1-5-32-544'; Error = $null }
+            }
+
             $result = New-TierModelGpo -Plan (New-GpoPlan -Actions @(
                 New-CreateAction -Name "MultiDenyGPO" -Extra @{
                     denyApplyGroupPolicy = @("GroupA", "GroupB", "GroupC")
                 }
             )) -DomainController "DC01"
 
-            $result.Executed | Should -Be 1
-            $result.Failed   | Should -Be 0
+            $result.Executed        | Should -Be 0
+            $result.Failed          | Should -Be 1
+
+            # One error naming the FIRST group: the throw leaves the foreach immediately
+            # instead of attempting GroupB and GroupC and collecting three warnings.
+            @($result.Errors).Count      | Should -Be 1
+            @($result.Errors)[0].Message | Should -Match "Deny-Apply ACL for 'GroupA'"
+            @($result.Errors)[0].Message | Should -Not -Match "GroupC"
         }
 
         It "Should skip denyApplyGroupPolicy block when property is absent" {
@@ -3114,6 +3143,346 @@ Describe "Get-TierModelGpo – extended coverage" -Tag "Unit", "GPO", "Planning"
         It "RiskAssessment.MediumRisk increments for ImportOnlyGpo new GPO" {
             $result = Get-TierModelGpo -Config $script:CfgNewImportOnly -DomainController "DC01" -Silent
             $result.Summary.RiskAssessment.MediumRisk | Should -BeGreaterThan 0
+        }
+    }
+}
+
+Describe "Import-TierModelGpo - transient SYSVOL retry" -Tag "Unit", "GPO", "Import", "Retry" {
+
+    # WHY THIS EXISTS
+    # Measured on a German lab domain (2026-09-15): 1 of 123 Import-GPO calls failed with
+    # 0x80070091 ERROR_DIR_NOT_EMPTY, 19 ms after the preceding import from the SAME backup
+    # source had finished. Import-GPO clears the target policy folder in SYSVOL and copies into
+    # it, so a handle the previous import has not released yet fails the next one. That single
+    # failure also failed the following ConfigureGPO, and Invoke-GpoDeployment returns on a
+    # configure failure BEFORE phase 4 - so all 131 GPO links were silently skipped.
+    #
+    # The retry classifies by HRESULT and never by message text: on that host the message reads
+    # "Das Verzeichnis ist nicht leer." Comparing text would be the exact defect this branch
+    # exists to remove (CLAUDE.md rule 2.5).
+    #
+    # Attempt counting uses a $global: counter on purpose: a $script: variable set in BeforeAll
+    # is NOT visible inside a -ModuleName mock body, because the mock runs in the module's own
+    # session state (CLAUDE.md section 4, trap 2). Same pattern as Unit.CanonicalAclAudit.Tests.ps1.
+
+    BeforeAll {
+        Mock Write-TierModelLog -ModuleName TierModel { }
+        Mock Write-Host -ModuleName TierModel { }
+        Mock Test-Path -ModuleName TierModel { return $true }
+        # The production backoff waits 0.5s / 1s / 2s. Mocked so the suite does not.
+        Mock Start-Sleep -ModuleName TierModel { }
+
+        function New-RetryImportPlan {
+            param([string]$GpoName = 'RetryGPO')
+            # Platform-native ConfigPath: Import-TierModelGpo derives the backup base from
+            # Split-Path -Parent, which yields an empty string for a Windows literal on Linux and
+            # then makes Join-Path throw before Import-GPO is ever reached.
+            return [PSCustomObject]@{
+                Actions = @([PSCustomObject]@{
+                    Action = 'ImportGPO'
+                    Data   = [PSCustomObject]@{ name = $GpoName; importPath = 'gpo' }
+                    Path   = 'OU=Tier0,DC=test,DC=local'
+                })
+                Config = [PSCustomObject]@{ ConfigPath = (Join-Path (Join-Path $TestDrive 'config') 'tiermodel.json') }
+            }
+        }
+    }
+
+    It "Retries ERROR_DIR_NOT_EMPTY and succeeds on the third attempt" {
+        $global:_gpoImportCall = 0
+        Mock Import-GPO -ModuleName TierModel {
+            $global:_gpoImportCall++
+            if ($global:_gpoImportCall -lt 3) {
+                # 0x80070091 as the signed Int32 HResult a COMException actually carries.
+                throw [System.Runtime.InteropServices.COMException]::new('directory not empty', -2147024751)
+            }
+            return $null
+        }
+
+        $result = Import-TierModelGpo -Plan (New-RetryImportPlan) -DomainController 'DC01'
+
+        $global:_gpoImportCall | Should -Be 3
+        $result.Executed       | Should -Be 1
+        $result.Failed         | Should -Be 0
+        $result.Converged      | Should -Be $true
+        Should -Invoke Import-GPO -ModuleName TierModel -Times 3 -Exactly
+    }
+
+    It "Backs off between attempts instead of retrying immediately" {
+        # 0x80070020 ERROR_SHARING_VIOLATION - the same family, a different code.
+        $global:_gpoImportCall = 0
+        Mock Import-GPO -ModuleName TierModel {
+            $global:_gpoImportCall++
+            if ($global:_gpoImportCall -lt 3) {
+                throw [System.Runtime.InteropServices.COMException]::new('sharing violation', -2147024864)
+            }
+            return $null
+        }
+
+        Import-TierModelGpo -Plan (New-RetryImportPlan) -DomainController 'DC01' | Out-Null
+
+        Should -Invoke Start-Sleep -ModuleName TierModel -Times 2 -Exactly
+    }
+
+    It "Retries an access-denied condition on the policy folder" {
+        # 0x80070005 - the second failure the lab run produced, on
+        # ...\Machine\Microsoft\Windows NT\SecEdit, left behind by the half-cleared folder.
+        $global:_gpoImportCall = 0
+        Mock Import-GPO -ModuleName TierModel {
+            $global:_gpoImportCall++
+            if ($global:_gpoImportCall -lt 2) { throw [System.UnauthorizedAccessException]::new('access denied') }
+            return $null
+        }
+
+        $result = Import-TierModelGpo -Plan (New-RetryImportPlan) -DomainController 'DC01'
+
+        $result.Executed | Should -Be 1
+        Should -Invoke Import-GPO -ModuleName TierModel -Times 2 -Exactly
+    }
+
+    It "Gives up after four attempts and reports the failure unchanged" {
+        Mock Import-GPO -ModuleName TierModel {
+            throw [System.Runtime.InteropServices.COMException]::new('directory not empty', -2147024751)
+        }
+
+        $result = Import-TierModelGpo -Plan (New-RetryImportPlan) -DomainController 'DC01'
+
+        Should -Invoke Import-GPO -ModuleName TierModel -Times 4 -Exactly
+        $result.Executed          | Should -Be 0
+        $result.Failed            | Should -Be 1
+        $result.Converged         | Should -Be $false
+        @($result.Errors).Count   | Should -Be 1
+        @($result.Errors)[0].Code | Should -Be 'GPOImportFailed'
+    }
+
+    It "Does not retry a condition that is not a transient file-system failure" {
+        # A malformed backup id is a configuration error. Retrying it would only slow the run
+        # down and bury the real cause - the fail-fast has to stay immediate.
+        Mock Import-GPO -ModuleName TierModel { throw [System.ArgumentException]::new('backup id is not a GUID') }
+
+        $result = Import-TierModelGpo -Plan (New-RetryImportPlan) -DomainController 'DC01'
+
+        Should -Invoke Import-GPO -ModuleName TierModel -Times 1 -Exactly
+        $result.Failed | Should -Be 1
+    }
+}
+
+Describe "Update-TierModelGPOConfig - transient SYSVOL retry" -Tag "Unit", "GPO", "Configure", "Retry" {
+
+    # The lab run's second failure: after the failed import left the policy folder half-cleared,
+    # creating ...\Machine\Microsoft\Windows NT\SecEdit came back "Access to the path is denied."
+    # Same transient family as the import, same treatment.
+
+    BeforeAll {
+        Mock Write-TierModelLog -ModuleName TierModel { }
+        Mock Write-Host -ModuleName TierModel { }
+        Mock Start-Sleep -ModuleName TierModel { }
+        Mock Get-GPO -ModuleName TierModel {
+            return [PSCustomObject]@{ DisplayName = 'ConfigGPO'; Id = [System.Guid]::Parse('60718cf3-9baa-4de9-90ad-2fc3d54e3f7e') }
+        }
+        Mock Get-ADDomain -ModuleName TierModel {
+            return [PSCustomObject]@{ DNSRoot = 'test.local'; PDCEmulator = 'DC01.test.local' }
+        }
+        Mock New-TierModelGptTmplContent -ModuleName TierModel { return '[Version]' }
+        Mock Get-Item -ModuleName TierModel { return [PSCustomObject]@{ Length = 42 } }
+
+        # Out-File is stubbed as a global function rather than mocked, the same technique
+        # tests\helpers\ADStubs.ps1 uses for commands Pester cannot handle. A Pester mock of
+        # Out-File loses the argument transformation on -Encoding, so binding the product's
+        # 'Unicode' fails with "Cannot convert the \"Unicode\" value ... to type
+        # System.Text.Encoding" - an artefact of the mock, not of the code under test. A function
+        # takes precedence over a cmdlet in command resolution, so the module's call lands here.
+        function global:Out-File {
+            param(
+                [Parameter(ValueFromPipeline = $true)]$InputObject,
+                $FilePath, $Encoding, [switch]$Force
+            )
+            process { }
+        }
+
+        # Linux-harness concession, not a product concern. Update-TierModelGPOConfig composes the
+        # SYSVOL path with Join-Path and splits it with Split-Path; both resolve a path provider,
+        # and on a UNC root with no derivable drive Join-Path throws on Linux while Split-Path
+        # splits on '/' only. Windows never sees either. These two stubs reproduce the Windows
+        # semantics exactly, so the code under test stays untouched and the assertion below is
+        # about the retry and nothing else.
+        Mock Join-Path -ModuleName TierModel {
+            param($Path, $ChildPath)
+            return (([string]$Path).TrimEnd('\') + '\' + [string]$ChildPath)
+        }
+        Mock Split-Path -ModuleName TierModel {
+            param($Path)
+            $p = [string]$Path
+            return $p.Substring(0, $p.LastIndexOf('\'))
+        }
+        # Neither folder exists yet, so both New-Item calls are reached; the written file does.
+        Mock Test-Path -ModuleName TierModel {
+            param($Path)
+            return ([string]$Path).EndsWith('GptTmpl.inf')
+        }
+
+        function New-ConfigurePlan {
+            return [PSCustomObject]@{
+                Actions = @([PSCustomObject]@{
+                    Action = 'ConfigureGPO'
+                    Data   = [PSCustomObject]@{ name = 'ConfigGPO' }
+                    Path   = 'OU=Tier0,DC=test,DC=local'
+                })
+                Config = [PSCustomObject]@{ ConfigPath = (Join-Path (Join-Path $TestDrive 'config') 'tiermodel.json') }
+            }
+        }
+    }
+
+    It "Retries a denied SecEdit folder creation and then configures the GPO" {
+        $global:_gpoNewItemCall = 0
+        Mock New-Item -ModuleName TierModel {
+            $global:_gpoNewItemCall++
+            if ($global:_gpoNewItemCall -eq 1) { throw [System.UnauthorizedAccessException]::new('access denied') }
+            return [PSCustomObject]@{ FullName = 'stub' }
+        }
+
+        $result = Update-TierModelGPOConfig -Plan (New-ConfigurePlan) -DomainController 'DC01'
+
+        $result.Executed | Should -Be 1
+        $result.Failed   | Should -Be 0
+        $global:_gpoNewItemCall | Should -Be 3   # 1 denied + 1 retry (Machine) + 1 (SecEdit)
+        Should -Invoke Start-Sleep -ModuleName TierModel -Times 1 -Exactly
+    }
+
+    AfterAll {
+        Remove-Item function:global:Out-File -ErrorAction SilentlyContinue
+    }
+}
+
+Describe "Get-TierModelGpo - self-healing re-plan for an incomplete GPO" -Tag "Unit", "GPO", "Planning", "SelfHeal" {
+
+    # WHY THIS EXISTS
+    # Before this change the planner emitted Create/Import/Configure ONLY inside
+    # "if (-not $existingGPO)". A GPO whose CreateGPO succeeded but whose ImportGPO failed was
+    # therefore never repaired: the next run saw it as existing, planned nothing but a link, and
+    # the deployment reported Converged while the policy stayed empty. That breaks constitution
+    # principle III at its core - Converged has to mean the target state was reached.
+    #
+    # Detection reads SYSVOL, not the directory, and is deliberately asymmetric: only a POSITIVE
+    # finding of an empty policy folder re-plans. Anything unknown - folder not replicated here,
+    # SYSVOL unreachable - leaves the existing behaviour untouched. Acting on an unknown state
+    # would overwrite settings on evidence we do not have.
+
+    BeforeAll {
+        Mock Write-TierModelLog -ModuleName TierModel { }
+        Mock Write-Host -ModuleName TierModel { }
+
+        Mock Get-ADDomain -ModuleName TierModel {
+            return [PSCustomObject]@{ DistinguishedName = 'DC=test,DC=local'; DNSRoot = 'test.local'; PDCEmulator = 'DC01.test.local' }
+        }
+        Mock Get-ADOrganizationalUnit -ModuleName TierModel {
+            param($Identity, $Server, $ErrorAction)
+            return [PSCustomObject]@{ DistinguishedName = $Identity }
+        }
+        Mock Get-ADGroup -ModuleName TierModel {
+            param([string]$Identity, [string]$Server, $ErrorAction)
+            return [PSCustomObject]@{ SamAccountName = $Identity }
+        }
+        Mock Get-GPO -ModuleName TierModel {
+            param([string]$Name, [string]$Server, [switch]$All, $ErrorAction)
+            if ($All) { return @() }
+            return [PSCustomObject]@{ DisplayName = $Name; Id = [System.Guid]::Parse('60718cf3-9baa-4de9-90ad-2fc3d54e3f7e') }
+        }
+        Mock Get-GPInheritance -ModuleName TierModel { return [PSCustomObject]@{ GpoLinks = @() } }
+
+        $script:CfgExistingConfigure = [PSCustomObject]@{
+            gpos = [PSCustomObject]@{
+                "OU=Tier0,DC=test,DC=local" = [PSCustomObject]@{
+                    PostConfigureGpo = @([PSCustomObject]@{ name = "ExistingGPO"; mode = "createImportAndConfigure" })
+                }
+            }
+            groups = @([PSCustomObject]@{ samaccountname = "GoodGroup" })
+        }
+
+        $script:CfgExistingImportOnly = [PSCustomObject]@{
+            gpos = [PSCustomObject]@{
+                "OU=Tier0,DC=test,DC=local" = [PSCustomObject]@{
+                    ImportOnlyGpo = @([PSCustomObject]@{ name = "ExistingGPO"; mode = "createAndImport" })
+                }
+            }
+        }
+    }
+
+    Context "Policy folder exists but carries no settings" {
+
+        BeforeEach {
+            # Policy root present, GptTmpl.inf absent, Machine/User empty.
+            Mock Test-Path -ModuleName TierModel {
+                param($Path)
+                return -not ([string]$Path).EndsWith('GptTmpl.inf')
+            }
+            Mock Get-ChildItem -ModuleName TierModel { return @() }
+        }
+
+        It "Re-plans Import and Configure for a createImportAndConfigure GPO" {
+            $result = Get-TierModelGpo -Config $script:CfgExistingConfigure -DomainController "DC01" -Silent
+
+            @($result.Actions | Where-Object { $_.Action -eq 'ImportGPO' }).Count    | Should -Be 1
+            @($result.Actions | Where-Object { $_.Action -eq 'ConfigureGPO' }).Count | Should -Be 1
+        }
+
+        It "Re-plans Import for a createAndImport GPO and no Configure" {
+            $result = Get-TierModelGpo -Config $script:CfgExistingImportOnly -DomainController "DC01" -Silent
+
+            @($result.Actions | Where-Object { $_.Action -eq 'ImportGPO' }).Count    | Should -Be 1
+            @($result.Actions | Where-Object { $_.Action -eq 'ConfigureGPO' }).Count | Should -Be 0
+            $result.Summary.ExistingCount | Should -Be 1   # anti-vacuity: the GPO was analysed
+        }
+
+        It "Never re-plans a create for a GPO that already exists" {
+            $result = Get-TierModelGpo -Config $script:CfgExistingConfigure -DomainController "DC01" -Silent
+
+            @($result.Actions | Where-Object { $_.Action -eq 'CreateGPO' }).Count | Should -Be 0
+            $result.Summary.ExistingCount | Should -Be 1   # anti-vacuity: the GPO was analysed
+        }
+    }
+
+    Context "Policy folder carries settings - the idempotent case" {
+
+        BeforeEach {
+            Mock Test-Path -ModuleName TierModel { return $true }
+            Mock Get-ChildItem -ModuleName TierModel { return @([PSCustomObject]@{ Name = 'registry.pol' }) }
+        }
+
+        It "Plans neither Import nor Configure when the policy is populated" {
+            # This is the idempotency guarantee: without it every run would re-import all 123
+            # GPOs from their backups and phase D could never report zero actions.
+            $result = Get-TierModelGpo -Config $script:CfgExistingConfigure -DomainController "DC01" -Silent
+
+            @($result.Actions | Where-Object { $_.Action -eq 'ImportGPO' }).Count    | Should -Be 0
+            @($result.Actions | Where-Object { $_.Action -eq 'ConfigureGPO' }).Count | Should -Be 0
+            $result.Summary.ExistingCount | Should -Be 1   # anti-vacuity: the GPO was analysed
+        }
+    }
+
+    Context "SYSVOL state cannot be established" {
+
+        It "Plans nothing extra when the policy folder is not present on this host" {
+            # Not replicated here yet. Absence of the folder is not evidence of an empty policy.
+            Mock Test-Path -ModuleName TierModel { return $false }
+            Mock Get-ChildItem -ModuleName TierModel { return @() }
+
+            $result = Get-TierModelGpo -Config $script:CfgExistingConfigure -DomainController "DC01" -Silent
+
+            @($result.Actions | Where-Object { $_.Action -eq 'ImportGPO' }).Count    | Should -Be 0
+            @($result.Actions | Where-Object { $_.Action -eq 'ConfigureGPO' }).Count | Should -Be 0
+            $result.Summary.ExistingCount | Should -Be 1   # anti-vacuity: the GPO was analysed
+        }
+
+        It "Plans nothing extra when SYSVOL cannot be read at all" {
+            Mock Test-Path -ModuleName TierModel { throw [System.IO.IOException]::new('network path not found') }
+
+            $result = Get-TierModelGpo -Config $script:CfgExistingConfigure -DomainController "DC01" -Silent
+
+            @($result.Actions | Where-Object { $_.Action -eq 'ImportGPO' }).Count    | Should -Be 0
+            @($result.Actions | Where-Object { $_.Action -eq 'ConfigureGPO' }).Count | Should -Be 0
+            $result.Errors | Should -BeNullOrEmpty
+            $result.Summary.ExistingCount | Should -Be 1   # anti-vacuity: the GPO was analysed
         }
     }
 }

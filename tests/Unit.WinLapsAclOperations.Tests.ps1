@@ -10,6 +10,13 @@ Test-TierModelWinLapsDecryptor), and T020 (Windows-LAPS-only invariant).
 Created : 2026-07-16
 Tags    : Unit, WinLapsAcl
 All AD/LAPS/GPO cmdlets are mocked — no live AD required.
+
+The SELF ACE fixtures below carry the SID 'S-1-5-10', not the name 'NT AUTHORITY\SELF'.
+Test-TierModelWinLapsAcl and Get-TierModelWinLapsAcl match SELF through
+ConvertTo-TierModelIdentitySid, which translates a name with the LOCAL machine's language:
+on German Windows 'NT AUTHORITY\SELF' does not translate at all (the account reads
+'NT-AUTORITAET\SELBST' there), so an English literal makes the SELF ACE look absent and the
+delegation look non-compliant. A SID is returned unchanged by that helper on every host.
 #>
 
 Describe "Windows LAPS ACL Operations" -Tag "Unit", "WinLapsAcl" {
@@ -293,7 +300,7 @@ Describe "Windows LAPS ACL Operations" -Tag "Unit", "WinLapsAcl" {
             Mock Get-Acl -ModuleName TierModel {
                 param($Path, $ErrorAction)
                 $selfAce = [PSCustomObject]@{
-                    IdentityReference = [PSCustomObject]@{ Value = 'NT AUTHORITY\SELF' }
+                    IdentityReference = [PSCustomObject]@{ Value = 'S-1-5-10' }  # SELF, by SID: see the note at the top of this file
                     IsInherited       = $false
                     ObjectType        = [Guid]::Empty
                 }
@@ -660,7 +667,7 @@ Describe "Windows LAPS ACL Operations" -Tag "Unit", "WinLapsAcl" {
             Mock Get-Acl -ModuleName TierModel {
                 param($Path, $ErrorAction)
                 $selfAce = [PSCustomObject]@{
-                    IdentityReference = [PSCustomObject]@{ Value = 'NT AUTHORITY\SELF' }
+                    IdentityReference = [PSCustomObject]@{ Value = 'S-1-5-10' }  # SELF, by SID: see the note at the top of this file
                     IsInherited       = $false
                     ObjectType        = [Guid]::Empty
                 }
@@ -835,7 +842,7 @@ Describe "Windows LAPS ACL Operations" -Tag "Unit", "WinLapsAcl" {
             Mock Get-Acl -ModuleName TierModel {
                 param($Path, $ErrorAction)
                 $selfAce = [PSCustomObject]@{
-                    IdentityReference = [PSCustomObject]@{ Value = 'NT AUTHORITY\SELF' }
+                    IdentityReference = [PSCustomObject]@{ Value = 'S-1-5-10' }  # SELF, by SID: see the note at the top of this file
                     IsInherited       = $false
                     ObjectType        = [Guid]::Empty
                 }
@@ -860,7 +867,7 @@ Describe "Windows LAPS ACL Operations" -Tag "Unit", "WinLapsAcl" {
             Mock Get-Acl -ModuleName TierModel {
                 param($Path, $ErrorAction)
                 $selfAce = [PSCustomObject]@{
-                    IdentityReference = [PSCustomObject]@{ Value = 'NT AUTHORITY\SELF' }
+                    IdentityReference = [PSCustomObject]@{ Value = 'S-1-5-10' }  # SELF, by SID: see the note at the top of this file
                     IsInherited       = $false
                     ObjectType        = [Guid]::Empty
                 }
@@ -881,18 +888,39 @@ Describe "Windows LAPS ACL Operations" -Tag "Unit", "WinLapsAcl" {
             $unexpected[0].Details      | Should -Match 'RogueGroup'
         }
 
-        It "Well-known principals (Domain Admins) holding LAPS rights are not flagged as unexpected" {
+        It "Well-known principals (Domain Admins, RID 512) holding LAPS rights are not flagged as unexpected" {
+            # Domain Admins is recognised by RID 512 under the domain SID, never by the
+            # name: that name is localised per domain ('Domänen-Admins' on a German
+            # directory) and the holder string Find-LapsADExtendedRights returns is then
+            # rendered again by the LOCAL machine. The mock therefore has to supply a
+            # domain SID, which the shared Get-ADDomain mock above deliberately omits.
+            #
+            # A real holder arrives as a rendered name and is translated back to its SID
+            # on the host running the audit; that translation cannot be reproduced in a
+            # test for a domain that does not exist, so the holder is given as the SID the
+            # translation would produce.
+            Mock Get-ADDomain -ModuleName TierModel {
+                return [PSCustomObject]@{
+                    DomainMode        = 'Windows2016Domain'
+                    NetBIOSName       = 'TEST'
+                    DistinguishedName = 'DC=test,DC=local'
+                    DomainSID         = 'S-1-5-21-1111111111-2222222222-3333333333'
+                }
+            }
             Mock Get-Acl -ModuleName TierModel {
                 param($Path, $ErrorAction)
                 $selfAce = [PSCustomObject]@{
-                    IdentityReference = [PSCustomObject]@{ Value = 'NT AUTHORITY\SELF' }
+                    IdentityReference = [PSCustomObject]@{ Value = 'S-1-5-10' }  # SELF, by SID: see the note at the top of this file
                     IsInherited       = $false
                     ObjectType        = [Guid]::Empty
                 }
                 return [PSCustomObject]@{ Path = $Path; Access = @($selfAce) }
             }
             Mock Find-LapsADExtendedRights -ModuleName TierModel {
-                return [PSCustomObject]@{ ExtendedRightHolders = @("$script:TestNetBIOS\Tier0Admins", "$script:TestNetBIOS\Domain Admins") }
+                return [PSCustomObject]@{ ExtendedRightHolders = @(
+                    "$script:TestNetBIOS\Tier0Admins"
+                    'S-1-5-21-1111111111-2222222222-3333333333-512'  # Domain Admins
+                ) }
             }
 
             $result = Test-TierModelWinLapsAcl -Config $script:WinLapsConfig1 -DomainController $script:TestDC
@@ -911,7 +939,7 @@ Describe "Windows LAPS ACL Operations" -Tag "Unit", "WinLapsAcl" {
             Mock Get-Acl -ModuleName TierModel {
                 param($Path, $ErrorAction)
                 $selfAce = [PSCustomObject]@{
-                    IdentityReference = [PSCustomObject]@{ Value = 'NT AUTHORITY\SELF' }
+                    IdentityReference = [PSCustomObject]@{ Value = 'S-1-5-10' }  # SELF, by SID: see the note at the top of this file
                     IsInherited       = $false
                     ObjectType        = [Guid]::Empty
                 }
@@ -942,7 +970,7 @@ Describe "Windows LAPS ACL Operations" -Tag "Unit", "WinLapsAcl" {
             Mock Get-Acl -ModuleName TierModel {
                 param($Path, $ErrorAction)
                 $selfAce = [PSCustomObject]@{
-                    IdentityReference = [PSCustomObject]@{ Value = 'NT AUTHORITY\SELF' }
+                    IdentityReference = [PSCustomObject]@{ Value = 'S-1-5-10' }  # SELF, by SID: see the note at the top of this file
                     IsInherited       = $false
                     ObjectType        = [Guid]::Empty
                 }
@@ -986,7 +1014,7 @@ Describe "Windows LAPS ACL Operations" -Tag "Unit", "WinLapsAcl" {
             Mock Get-Acl -ModuleName TierModel {
                 param($Path, $ErrorAction)
                 $selfAce = [PSCustomObject]@{
-                    IdentityReference = [PSCustomObject]@{ Value = 'NT AUTHORITY\SELF' }
+                    IdentityReference = [PSCustomObject]@{ Value = 'S-1-5-10' }  # SELF, by SID: see the note at the top of this file
                     IsInherited       = $false
                     ObjectType        = [Guid]::Empty
                 }

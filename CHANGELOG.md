@@ -7,6 +7,140 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **German (and any localized) Active Directory support.** `Deploy-TierModel` and
+  `Audit-TierModel` now run against a domain installed in any language, from a host
+  installed in any language. The English names in `config/*.json` are treated as
+  canonical identifiers and resolved to well-known SIDs rather than looked up by
+  directory name, so one configuration set works everywhere and keeps working where a
+  built-in group has been renamed. English and German are the regression-tested
+  combinations. See `docs/language-support.md` and
+  `specs/008-german-language-support/`.
+- `Get-TierModelCanonicalPrincipal` / `Resolve-TierModelCanonicalSid` (module-internal):
+  canonical English name to well-known RID, composed against the target domain SID and
+  verified by reading the object back. The read-back keeps forest-root groups
+  unresolvable in a child domain and absent optional groups (Allowed RODC Password
+  Replication Group) resolving to nothing, so callers skip them instead of writing an
+  unresolvable SID into `[Privilege Rights]`.
+- `optional/New-TierModelAdmlManifest.ps1`: generates `config/tiermodel-adml-<lang>.json`
+  with MD5 hashes from a folder of ADML files, so adding a language to the central store
+  is a content drop plus one command. The ADML files themselves are Microsoft
+  redistributables and are not in this repository.
+- `tests/Unit.CanonicalPrincipal.Tests.ps1`: resolution against a German-directory
+  fixture where every English name lookup fails, proving no code path depends on the name.
+
+### Fixed
+- **`Converged` in the deployment summary now means "nothing changed", not "nothing
+  failed".** Both consolidated summaries AND-ed the executors' own `Converged` flags, and
+  those flags carry two different meanings: `New-TierModelOu` and `New-TierModelGroup`
+  compute them from "nothing was applied", every other executor from "nothing failed". A
+  run that created 146 GPOs, 60 ADMX files and 17 Windows LAPS ACEs therefore printed
+  `Converged: True` whenever no OU and no group changed — hiding exactly the kind of
+  permanently non-idempotent phase that constitution principle III exists to surface. Both
+  summaries now derive the flag from the totals they already compute
+  (`applied -eq 0 -and errors -eq 0`). Stricter, never laxer: no run that previously read
+  `False` reads `True` now.
+- `New-TierModelGroup` reported `Converged = true` for a group phase in which every create
+  failed and nothing was applied — its flag ignored the error count, unlike
+  `New-TierModelOu`.
+- **A failed Deny-Apply GPO ACE no longer passes as success.** `New-TierModelGpo`
+  downgraded the failure to a yellow console warning, so
+  `*- Tier Model Account Restrictions` could deploy without its Domain Controllers
+  protection while the run reported success — a silently weakened tier boundary. The ACE
+  is now built from a SID and a failure fails the GPO action, making the deployment
+  non-convergent. **This is a behaviour change for English deployments too.**
+- Windows LAPS delegation was not idempotent and reported false drift on a localized
+  host. SELF detection and the administrative holder allow-list compared
+  client-translated account names (`NT-AUTORITÄT\SELBST`,
+  `VORDEFINIERT\Administratoren`), so the SELF ACE looked absent on every run and every
+  legitimate holder was flagged. Both now compare SIDs.
+- The Windows LAPS planner blocked the whole deployment with `RequiredGroupNotFound`, and
+  the audit reported the delegation compliant without checking it, on a localized domain:
+  `Get-ADGroup -Filter "Name -eq 'Domain Admins'"` returns an empty result rather than
+  throwing. Planner and audit now share `Resolve-TierModelLapsPrincipal`.
+- The Domain Admins and Enterprise Admins corroboration lookups in
+  `Test-TierModelPrerequisites` resolve by RID 512 / 519 instead of by name; the name
+  lookup failed the entire prerequisite check with "Domain Admin membership required"
+  against a valid administrator on a German domain.
+- `Resolve-ADPrincipalSid` used `-Server $DomainController` without declaring the
+  parameter, working only through PowerShell's dynamic scoping from its one caller.
+- Timestamps are formatted with `InvariantCulture` so log and report filenames and JSON
+  timestamps do not vary with the host's locale.
+- **GPO deployment survives a transient SYSVOL condition, and repairs a GPO it left
+  half-built.** Three defects that a German lab deployment exposed but that are not
+  language-specific and affect English deployments identically:
+  - `Import-GPO` clears the target policy folder in SYSVOL before copying into it, so
+    back-to-back imports — a full run does 123, several from the same backup source — can
+    meet a folder the previous import has not finished releasing. One import failed with
+    `ERROR_DIR_NOT_EMPTY` 19 ms after the preceding one from the same source completed.
+    The SYSVOL writes in `Import-TierModelGpo` and `Update-TierModelGPOConfig` now retry
+    transient file-system conditions with the exponential backoff already used for the
+    post-create AD verifications, classifying by HRESULT and never by message text (the
+    message is localized). A non-transient failure still throws on the first attempt and a
+    transient one that survives every attempt still fails the action — no fail-fast was
+    softened.
+  - `Get-TierModelGpo` planned Create/Import/Configure only for a GPO that did not exist
+    yet, so a GPO whose create succeeded and whose import failed was never repaired: the
+    next run saw it as existing, planned only its link, and the deployment reported
+    `Converged` over an empty policy. The planner now re-plans Import (and Configure) when
+    the GPO's policy folder in SYSVOL is provably empty. The check is deliberately
+    asymmetric — a folder that has not replicated to this host, or a SYSVOL that cannot be
+    read, changes nothing — because re-importing overwrites settings and must never act on
+    a state that could not be read.
+  - The consolidated deployment summary counted the same failures twice. The GPO result
+    publishes both an `Errors` array and a `Failed` integer for the same failures, and both
+    were added: two failed GPO actions printed `Errors: 4`. `Applied`/`Executed` had the
+    same shape. Each result is now counted from exactly one source.
+- **Authentication Policy Silos could not be deployed against a localized domain.** The
+  silo chain passed the configured group name straight to `-Identity`, so
+  `Domain Controllers` and `Read-only Domain Controllers` — which the directory serves
+  under localized names — resolved to nothing and the prerequisite gate skipped the entire
+  silo phase (`FailureCount: 2, Checked: 8` on the German lab domain). The SDDL side
+  already resolved by SID; the gate, the membership planner
+  (`Get-TierModelAuthSiloMembershipFd`), the membership assignment
+  (`Set-TierModelAuthSiloMembership`) and the silo audit (`Test-TierModelAuthSilo`) now do
+  the same through the shared, module-internal `Resolve-TierModelGroupIdentity`. In the
+  audit the old behaviour was worse than an error: the failed expansion became a
+  compliance issue string, so a localized domain audited as non-compliant on principle.
+  The gate keeps its `Get-ADGroup` read-back — it is what proves the principal is a group,
+  since the resolver's name fallback tries `Get-ADUser` first — only its `-Identity`
+  became SID-based.
+- A `-FullDeployment` run whose auth silo prerequisites failed printed the failures in red
+  and then reported `Deploy script completed successfully` with no silo deployed, because
+  the gate result carries none of the shapes the consolidated summary reads. The skipped
+  phase now counts as an error and marks the run non-convergent, as the standalone
+  `-Include*` path already did.
+- The SID cache dropped `ActualName`, so the log line that proves an English configuration
+  name points at a localized directory object — `Domain Admins -> ...-512 (Domänen-Admins)` —
+  was complete only on the first resolution of a run. Every later caller read
+  `ActualName: null`, which is what the auth silo gate logged on the German lab domain,
+  because the GPO phase warms the cache long before it runs. Diagnostic only; the SID was
+  always correct.
+- `optional/Test-TierModelLocalizedDeployment.ps1` reported every machine-local principal in
+  `[Privilege Rights]` as a problem. `NT SERVICE\*`, `IIS APPPOOL\*` and `CLIUSR` have no
+  domain SID at all — `secedit` resolves them on the target machine — and the configuration
+  declares each one as a `literalStrings` entry. The German lab report raised 6 problems
+  covering 140 such entries, which buries the one finding that would matter: a plain,
+  localizable name nobody configured. The rule now exempts what the configuration declares and
+  reports only the rest.
+
+### Changed
+- The two English-only prerequisite gates (host install language, well-known group names)
+  are removed. The host language, the resolved culture and the canary group names are
+  still recorded in `EnvironmentSnapshot` as diagnostics (`HostOsLanguage`, `AdLanguage`,
+  and the existing `HostOsEnglish` / `AdLanguageEnglish` / `AdLanguageMismatches` keys),
+  but nothing blocks.
+- GPO planners classify well-known containers through
+  `Test-TierModelWellKnownContainer`, which keeps the existing English literal match and
+  additionally compares the container DNs `Get-ADDomain` reports.
+- `docs/language-support.md` rewritten: the English-only policy and the "community
+  language packs" roadmap are replaced by the SID-resolution mechanism and its rationale.
+- Tests brought onto the new contracts: `Unit.GpoOperations` now pins "a failed Deny-Apply
+  ACE fails the GPO action" instead of the warn-and-continue behaviour it replaced, and the
+  Windows LAPS SELF fixtures carry the SID `S-1-5-10` rather than the literal
+  `NT AUTHORITY\SELF`, which a localized host cannot translate and which therefore made the
+  correct SID comparison look like a failure.
+
 ### Changed
 - Reworded documentation and comment attribution that named individual AI agent
   personas, describing the role or the work instead. One such name appeared in a

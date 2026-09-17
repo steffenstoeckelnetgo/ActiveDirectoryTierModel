@@ -317,7 +317,7 @@ if ($Logging -and -not $OutputFileBase) {
 # Initialize logging if requested
 $script:LogDirectory = $null
 if ($Logging) {
-    $timestamp = Get-Date -Format 'MMddyy-HHmm'
+    $timestamp = (Get-Date).ToString('MMddyy-HHmm', [System.Globalization.CultureInfo]::InvariantCulture)
     $logFileName = "$OutputFileBase-$timestamp.log"
 
     # Resolve the log DIRECTORY exactly once, then derive both the log file and the Debug\
@@ -441,7 +441,7 @@ function Write-TierModelFailFast {
                 # The PowerShell-version gate fires BEFORE Import-Module, so the logger does not
                 # exist yet. Emit the identical JSON record directly rather than lose the failure.
                 $ffEntry = [PSCustomObject]@{
-                    Timestamp     = (Get-Date -Format 'yyyy-MM-ddTHH:mm:ss.fffZ')
+                    Timestamp     = ((Get-Date).ToString('yyyy-MM-ddTHH:mm:ss.fffZ', [System.Globalization.CultureInfo]::InvariantCulture))
                     Level         = 'Error'
                     Message       = $ffMessage
                     Data          = $ffData
@@ -730,7 +730,7 @@ if ($script:DiagnosticsEnabled) {
 # POC-3: a nested Start-Transcript is harmless, so there is deliberately no "is a transcript
 # already running" pre-check here — an earlier version of this plan had one and it was wrong.
 if ($script:DiagnosticsEnabled -and $EnableVerbose -and $EnableDebug -and $script:DebugFolderPath) {
-    $transcriptStamp = Get-Date -Format 'MMddyy-HHmmss'
+    $transcriptStamp = (Get-Date).ToString('MMddyy-HHmmss', [System.Globalization.CultureInfo]::InvariantCulture)
     $candidateTranscript = Join-Path $script:DebugFolderPath "Deploy-TierModel.transcript.$transcriptStamp.log"
     try {
         Start-Transcript -Path $candidateTranscript -Force -WhatIf:$false -ErrorAction Stop | Out-Null
@@ -2717,6 +2717,11 @@ if ($FullDeployment) {
                     if (-not $authSilosPrereqFd.Passed) {
                         Write-Host "  ❌ Auth silo prerequisites not met — skipping silo deployment:" -ForegroundColor Red
                         $authSilosPrereqFd.Failures | ForEach-Object { Write-Host "    - $_" -ForegroundColor Red }
+                        # Carried to the consolidated summary below. A skipped phase is not a
+                        # successful run: the gate publishes none of the three result shapes the
+                        # aggregation loop understands, so it is counted there explicitly. The
+                        # standalone -Include* path has always done this (see $standaloneTotalErrors).
+                        $authSiloPrereqFailureCount = @($authSilosPrereqFd.Failures).Count
                     } else {
                         # Auth Policies — create-only, fresh plan at execution time
                         $authPolicyExecPlan = Get-TierModelAuthPolicyFd -Config $config -DomainController $PreferredDc
@@ -2773,45 +2778,63 @@ if ($FullDeployment) {
         $totalSkipped = 0
         $totalErrors = 0
         $totalDuration = 0
-        $overallConverged = $true
         
         foreach ($result in $allResults) {
             if ($result) {
-                # Handle different result object structures
-                if ($result.PSObject.Properties.Name -contains 'Applied' -and $result.Applied) {
-                    $totalApplied += @($result.Applied).Count
-                }
-                if ($result.PSObject.Properties.Name -contains 'Executed' -and $result.Executed) {
-                    $totalApplied += $result.Executed
-                }
-                if ($result.PSObject.Properties.Name -contains 'Summary' -and $result.Summary -and $result.Summary.PSObject.Properties.Name -contains 'Successful') {
-                    $totalApplied += $result.Summary.Successful
-                }
+                # Handle different result object structures - EXACTLY ONE source per result.
+                #
+                # These shapes overlap. Invoke-GpoDeployment returns both an Errors array and a
+                # Failed integer describing the SAME failures, so counting both reported
+                # "Errors: 4" for two failed GPO actions on the German lab run (2026-09-15), and
+                # Applied/Executed can overlap the same way. The integer is authoritative where a
+                # result publishes one; the array is the fallback for results that do not.
+                # (The standalone -Include* aggregation further down already reads a single
+                # source per result and needs no equivalent change.)
+                $totalApplied += if ($result.PSObject.Properties.Name -contains 'Executed' -and $result.Executed) {
+                    [int]$result.Executed
+                } elseif ($result.PSObject.Properties.Name -contains 'Applied' -and $result.Applied) {
+                    @($result.Applied).Count
+                } elseif ($result.PSObject.Properties.Name -contains 'Summary' -and $result.Summary -and $result.Summary.PSObject.Properties.Name -contains 'Successful') {
+                    [int]$result.Summary.Successful
+                } else { 0 }
                 
                 if ($result.PSObject.Properties.Name -contains 'Skipped' -and $result.Skipped) {
                     $totalSkipped += if ($result.Skipped -is [int]) { $result.Skipped } else { @($result.Skipped).Count }
                 }
                 
-                if ($result.PSObject.Properties.Name -contains 'Errors' -and $result.Errors) {
-                    $totalErrors += @($result.Errors).Count
-                }
-                if ($result.PSObject.Properties.Name -contains 'Failed' -and $result.Failed) {
-                    $totalErrors += $result.Failed
-                }
-                if ($result.PSObject.Properties.Name -contains 'Summary' -and $result.Summary -and $result.Summary.PSObject.Properties.Name -contains 'Failed') {
-                    $totalErrors += $result.Summary.Failed
-                }
+                $totalErrors += if ($result.PSObject.Properties.Name -contains 'Failed' -and $result.Failed) {
+                    [int]$result.Failed
+                } elseif ($result.PSObject.Properties.Name -contains 'Errors' -and $result.Errors) {
+                    @($result.Errors).Count
+                } elseif ($result.PSObject.Properties.Name -contains 'Summary' -and $result.Summary -and $result.Summary.PSObject.Properties.Name -contains 'Failed') {
+                    [int]$result.Summary.Failed
+                } else { 0 }
                 
                 if ($result.PSObject.Properties.Name -contains 'DurationMs' -and $result.DurationMs) {
                     $totalDuration += $result.DurationMs
                 }
-                
-                if ($result.PSObject.Properties.Name -contains 'Converged' -and -not $result.Converged) {
-                    $overallConverged = $false
-                }
             }
         }
         
+        # The auth silo prerequisite gate is not one of $allResults - it returns
+        # Passed/Failures/Checked, none of the shapes the loop above reads - so its failures are
+        # added here, once. Without this the run reported "completed successfully" while the
+        # entire silo phase had been skipped (German lab run, 2026-09-16).
+        if ((Get-Variable authSiloPrereqFailureCount -ErrorAction SilentlyContinue) -and $authSiloPrereqFailureCount -gt 0) {
+            $totalErrors += $authSiloPrereqFailureCount
+        }
+
+        # Converged is derived from the totals above, NOT from the results' own Converged flags.
+        #
+        # Those flags carry two different meanings across the module: New-TierModelOu and
+        # New-TierModelGroup set them from "nothing was applied" (idempotency), every other
+        # executor from "nothing failed" (success). AND-ing them therefore reported
+        # "Converged: True" for a run that had just created 146 GPOs, 60 ADMX files and 17 LAPS
+        # ACEs, as long as no OU or group changed - which would hide a permanently
+        # non-idempotent phase, the very defect class constitution principle III exists to
+        # surface. The totals have one meaning, so the summary reads them instead.
+        $overallConverged = ($totalApplied -eq 0 -and $totalErrors -eq 0)
+
         # Display consolidated results
         Write-Host "Applied: $totalApplied" -ForegroundColor Green
         Write-Host "Skipped: $totalSkipped" -ForegroundColor Yellow
@@ -3291,7 +3314,6 @@ if ($activeScopeCount -eq 0 -and $activeIncludeCount -gt 0) {
     $standaloneTotalSkipped = 0
     $standaloneTotalErrors = 0
     $standaloneTotalDuration = 0
-    $standaloneConverged = $true
     $standaloneDeploymentPlan = @{
         TotalActions = 0
         CreateCount = 0
@@ -3323,7 +3345,6 @@ if ($activeScopeCount -eq 0 -and $activeIncludeCount -gt 0) {
                     $standaloneTotalApplied += if ($msaResult.Applied) { @($msaResult.Applied).Count } else { 0 }
                     $standaloneTotalErrors += if ($msaResult.Errors) { @($msaResult.Errors).Count } else { 0 }
                     $standaloneTotalDuration += if ($msaResult.DurationMs) { $msaResult.DurationMs } else { 0 }
-                    if ($msaResult.PSObject.Properties.Name -contains 'Converged' -and -not $msaResult.Converged) { $standaloneConverged = $false }
                 }
             } else {
                 Write-Host "  ✅ MSA ACL delegations already up to date" -ForegroundColor Green
@@ -3351,7 +3372,6 @@ if ($activeScopeCount -eq 0 -and $activeIncludeCount -gt 0) {
                     $standaloneTotalApplied += if ($gmsaResult.Applied) { @($gmsaResult.Applied).Count } else { 0 }
                     $standaloneTotalErrors += if ($gmsaResult.Errors) { @($gmsaResult.Errors).Count } else { 0 }
                     $standaloneTotalDuration += if ($gmsaResult.DurationMs) { $gmsaResult.DurationMs } else { 0 }
-                    if ($gmsaResult.PSObject.Properties.Name -contains 'Converged' -and -not $gmsaResult.Converged) { $standaloneConverged = $false }
                 }
             } else {
                 Write-Host "  ✅ gMSA ACL delegations already up to date" -ForegroundColor Green
@@ -3379,7 +3399,6 @@ if ($activeScopeCount -eq 0 -and $activeIncludeCount -gt 0) {
                     $standaloneTotalApplied += if ($dmsaResult.Applied) { @($dmsaResult.Applied).Count } else { 0 }
                     $standaloneTotalErrors += if ($dmsaResult.Errors) { @($dmsaResult.Errors).Count } else { 0 }
                     $standaloneTotalDuration += if ($dmsaResult.DurationMs) { $dmsaResult.DurationMs } else { 0 }
-                    if ($dmsaResult.PSObject.Properties.Name -contains 'Converged' -and -not $dmsaResult.Converged) { $standaloneConverged = $false }
                 }
             } else {
                 Write-Host "  ✅ dMSA ACL delegations already up to date" -ForegroundColor Green
@@ -3407,7 +3426,6 @@ if ($activeScopeCount -eq 0 -and $activeIncludeCount -gt 0) {
                     $standaloneTotalApplied += if ($winLapsResult.Applied) { @($winLapsResult.Applied).Count } else { 0 }
                     $standaloneTotalErrors += if ($winLapsResult.Errors) { @($winLapsResult.Errors).Count } else { 0 }
                     $standaloneTotalDuration += if ($winLapsResult.DurationMs) { $winLapsResult.DurationMs } else { 0 }
-                    if ($winLapsResult.PSObject.Properties.Name -contains 'Converged' -and -not $winLapsResult.Converged) { $standaloneConverged = $false }
                 }
             } else {
                 Write-Host "  ✅ Windows LAPS ACL delegations already up to date" -ForegroundColor Green
@@ -3435,7 +3453,6 @@ if ($activeScopeCount -eq 0 -and $activeIncludeCount -gt 0) {
                     $standaloneTotalApplied += if ($auditResult.Applied) { @($auditResult.Applied).Count } else { 0 }
                     $standaloneTotalErrors += if ($auditResult.Errors) { @($auditResult.Errors).Count } else { 0 }
                     $standaloneTotalDuration += if ($auditResult.DurationMs) { $auditResult.DurationMs } else { 0 }
-                    if ($auditResult.PSObject.Properties.Name -contains 'Converged' -and -not $auditResult.Converged) { $standaloneConverged = $false }
                 }
             } else {
                 Write-Host "  ✅ Domain audit rule already up to date" -ForegroundColor Green
@@ -3473,7 +3490,6 @@ if ($activeScopeCount -eq 0 -and $activeIncludeCount -gt 0) {
                         $standaloneTotalApplied += if ($authPolicyStandaloneResult.Applied) { @($authPolicyStandaloneResult.Applied).Count } else { 0 }
                         $standaloneTotalErrors  += if ($authPolicyStandaloneResult.Errors)  { @($authPolicyStandaloneResult.Errors).Count  } else { 0 }
                         $standaloneTotalDuration += if ($authPolicyStandaloneResult.DurationMs) { $authPolicyStandaloneResult.DurationMs } else { 0 }
-                        if ($authPolicyStandaloneResult.PSObject.Properties.Name -contains 'Converged' -and -not $authPolicyStandaloneResult.Converged) { $standaloneConverged = $false }
                     }
                 }
             }
@@ -3500,7 +3516,6 @@ if ($activeScopeCount -eq 0 -and $activeIncludeCount -gt 0) {
                             $standaloneTotalApplied += if ($authSiloStandaloneResult.Applied) { @($authSiloStandaloneResult.Applied).Count } else { 0 }
                             $standaloneTotalErrors  += if ($authSiloStandaloneResult.Errors)  { @($authSiloStandaloneResult.Errors).Count  } else { 0 }
                             $standaloneTotalDuration += if ($authSiloStandaloneResult.DurationMs) { $authSiloStandaloneResult.DurationMs } else { 0 }
-                            if ($authSiloStandaloneResult.PSObject.Properties.Name -contains 'Converged' -and -not $authSiloStandaloneResult.Converged) { $standaloneConverged = $false }
                         }
                     }
 
@@ -3524,7 +3539,6 @@ if ($activeScopeCount -eq 0 -and $activeIncludeCount -gt 0) {
                             $standaloneTotalApplied += if ($authMembershipStandaloneResult.Applied) { @($authMembershipStandaloneResult.Applied).Count } else { 0 }
                             $standaloneTotalErrors  += if ($authMembershipStandaloneResult.Errors)  { @($authMembershipStandaloneResult.Errors).Count  } else { 0 }
                             $standaloneTotalDuration += if ($authMembershipStandaloneResult.DurationMs) { $authMembershipStandaloneResult.DurationMs } else { 0 }
-                            if ($authMembershipStandaloneResult.PSObject.Properties.Name -contains 'Converged' -and -not $authMembershipStandaloneResult.Converged) { $standaloneConverged = $false }
                         } elseif ($authPolicyStandalonePlan.Summary.ToCreate -eq 0 -and $authSiloStandalonePlan.Summary.ToCreate -eq 0) {
                             Write-Host "  ✅ Already deployed — nothing to create" -ForegroundColor Green
                         }
@@ -3535,6 +3549,12 @@ if ($activeScopeCount -eq 0 -and $activeIncludeCount -gt 0) {
     }
     
     if ($ConfirmApply) {
+        # Same derivation as the FullDeployment summary above, and for the same reason: every
+        # executor reachable from here reports Converged as "nothing failed", so the AND of
+        # those flags printed "Converged: True" after applying, for example, 17 Windows LAPS
+        # ACEs. The totals are unambiguous.
+        $standaloneConverged = ($standaloneTotalApplied -eq 0 -and $standaloneTotalErrors -eq 0)
+
         Write-Host "`n=== Deployment Results ===" -ForegroundColor Blue
         Write-Host "Applied: $standaloneTotalApplied" -ForegroundColor Green
         Write-Host "Skipped: $standaloneTotalSkipped" -ForegroundColor Yellow

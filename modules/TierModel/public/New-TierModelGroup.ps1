@@ -203,7 +203,9 @@ function New-TierModelGroup {
         
         $endTime = Get-Date
         $durationMs = [int]($endTime - $startTime).TotalMilliseconds
-        $converged = $applied.Count -eq 0
+        # Errors count, exactly as in New-TierModelOu.ps1: without the second term a group
+        # phase that failed every create and applied nothing reported Converged = true.
+        $converged = $applied.Count -eq 0 -and $errors.Count -eq 0
         
         Write-TierModelLog -Level Info -Message "GroupCreateComplete" -Data @{
             AppliedCount = $applied.Count

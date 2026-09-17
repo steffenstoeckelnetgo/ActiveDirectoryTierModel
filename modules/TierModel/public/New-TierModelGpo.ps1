@@ -227,47 +227,64 @@ function New-TierModelGpo {
                         }
                     }
                     
-                    # Set GPO ACLs (like DenyApply groups) using direct ACL manipulation
+                    # Set GPO ACLs (like DenyApply groups) using direct ACL manipulation.
+                    #
+                    # A failure here is NOT cosmetic. The Deny-Apply ACE is what keeps a
+                    # tier-restriction GPO (e.g. "*- Tier Model Account Restrictions") from ever
+                    # applying to domain controllers. A GPO that deploys without it is a silently
+                    # weakened tier boundary, so any failure fails the GPO action - it used to be
+                    # downgraded to a yellow console warning while the run reported success.
                     if ($gpoData.PSObject.Properties.Name -contains 'denyApplyGroupPolicy' -and $gpoData.denyApplyGroupPolicy) {
+                        # Get domain info for building the ADSI path (once for all deny groups).
+                        $domain = Get-ADDomain -Server $DomainController -ErrorAction Stop
+                        $domainDN = $domain.DistinguishedName
+
                         foreach ($denyGroup in $gpoData.denyApplyGroupPolicy) {
                             try {
-                                
-                                # Get domain info for building ADSI path
-                                $domain = Get-ADDomain -Server $DomainController -ErrorAction Stop
-                                $domainDN = $domain.DistinguishedName
-                                $domainNetbios = $domain.NetBIOSName
-                                
                                 # Build ADSI path to GPO container (GPC) in AD, targeting the
                                 # preferred DC so the Deny-Apply ACL is written to the SAME DC as
                                 # every other ACL (serverless binding would hit a random DC and
                                 # cause replication-dependent inconsistency in multi-DC environments).
                                 $gpcAdsiPath = "LDAP://$DomainController/CN={$($newGPO.Id)},CN=Policies,CN=System,$domainDN"
                                 $gpc = [ADSI]$gpcAdsiPath
-                                
-                                # Resolve group identity to NTAccount
-                                $ntAccount = New-Object System.Security.Principal.NTAccount("$domainNetbios", $denyGroup)
-                                
+
+                                # Resolve the group to a SID rather than composing NETBIOS\<name>.
+                                # denyApplyGroupPolicy names built-in principals ('Domain Controllers',
+                                # 'Read-only Domain Controllers') whose directory names are localised
+                                # per domain and can be renamed, so an NTAccount built from the config
+                                # string does not translate on a non-English domain. A SID always does.
+                                $denySidResult = Resolve-TierModelPrincipalSid -Principal $denyGroup -DomainController $DomainController -CorrelationId $CorrelationId
+                                if (-not $denySidResult.Success -or [string]::IsNullOrWhiteSpace($denySidResult.Sid)) {
+                                    throw "Could not resolve Deny-Apply principal '$denyGroup' to a SID: $($denySidResult.Error)"
+                                }
+                                $denyIdentity = [System.Security.Principal.SecurityIdentifier]::new($denySidResult.Sid)
+
                                 # Apply GPO extended right GUID (documented standard)
                                 $applyGpoGuid = [Guid]"edacfd8f-ffb3-11d1-b41d-00a0c968f939"
-                                
+
                                 # Build a Deny ACE for Apply GPO extended right
                                 $denyAce = New-Object System.DirectoryServices.ActiveDirectoryAccessRule `
-                                    ($ntAccount, "ExtendedRight", "Deny", $applyGpoGuid)
-                                
+                                    ($denyIdentity, "ExtendedRight", "Deny", $applyGpoGuid)
+
                                 # Add ACE and commit
                                 $acl = $gpc.ObjectSecurity
                                 $acl.AddAccessRule($denyAce)
                                 $gpc.ObjectSecurity = $acl
                                 $gpc.CommitChanges()
-                                
-                                Write-Host "    ✅ Added DENY Apply GPO ACL for: $denyGroup" -ForegroundColor Green
+
+                                Write-Host "    ✅ Added DENY Apply GPO ACL for: $denyGroup ($($denySidResult.Sid))" -ForegroundColor Green
                             } catch {
-                                Write-Host "    Warning: Failed to set Deny Apply ACL for group '$denyGroup' - $($_.Exception.Message)" -ForegroundColor Yellow
-                                Write-TierModelLog -Level Warning -Message "Failed to set GPO Deny Apply ACL" -Data @{
+                                Write-TierModelLog -Level Error -Message "Failed to set GPO Deny Apply ACL" -Data @{
                                     GPOName = $gpoName
                                     Group = $denyGroup
                                     Exception = $_.Exception.Message
-                                }
+                                    CorrelationId = $CorrelationId
+                                } | Out-Null
+
+                                # Re-thrown so the per-GPO handler records the failure, increments
+                                # Failed and clears Converged. Deploy-TierModel surfaces a
+                                # non-convergent GPO stage rather than reporting success.
+                                throw "GPO '$gpoName' was created, but its Deny-Apply ACL for '$denyGroup' could not be written: $($_.Exception.Message)"
                             }
                         }
                     }
