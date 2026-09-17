@@ -1,6 +1,6 @@
 # TierModel Test Coverage Analysis & Roadmap
 
-**Generated:** September 8th, 2026  
+**Generated:** September 8th, 2026 · **Headline figures refreshed:** September 17th, 2026  
 **Purpose:** Comprehensive analysis of test coverage across all TierModel scripts and functions
 
 ---
@@ -9,7 +9,22 @@
 
 > **How coverage is measured:** Pester v5's built-in `CodeCoverage` feature instruments the CI-scoped 82-file module population and tracks which commands are executed during the full test suite run (`Invoke-AllTests.ps1`). To re-run: `cd TierModel; $c = New-PesterConfiguration; $c.Run.Path = '.\tests'; $c.CodeCoverage.Enabled = $true; $c.CodeCoverage.Path = @('.\modules\TierModel\*.psm1','.\modules\TierModel\public\*.ps1','.\optional\Update-TierModelMembership.ps1'); Invoke-Pester -Configuration $c`
 
-**Last measured:** 2026-09-08 (1,994 automated tests: **1,994 passing / 0 failures — 100%** — Pester 5.9.0 pinned) | **Overall: 87.63%** *(CI-scoped 82-file module population; 14,651/16,719 commands executed)* | **Target: 95%** | **CI gate: 80% aggregate**
+**Last measured:** 2026-09-17 on the **German lab host** (`pwsh -NonInteractive`, Pester 5.9.0 pinned) | **Overall: 85.73%** *(14,742 / 17,195 commands executed)* | **Target: 95%** | **CI gate: 80% aggregate — met**
+
+> **Read the two numbers separately.** Coverage counts commands some test executed at least once;
+> it is not a pass rate and says nothing about correctness. The functional evidence is the lab
+> cycle recorded in `CLAUDE.md` §6 — deploy 689/689 with 0 errors, a second run applying 0 actions,
+> and an audit of 433 checks with 0 drift, all against a green-field German domain.
+>
+> **The suite figure moved too:** **2,056 passing of 2,088** on German Windows 11, 2026-09-16.
+> The 32 failures are host-language artefacts in the fixtures rather than product defects, and CI
+> — which runs English — never sees them. README carries the breakdown.
+>
+> **Why coverage fell from 87.63%:** the localization work added code faster than tests reached
+> it, and the analysed population grew by **476 commands** (16,719 → 17,195). The 2026-09-08 run
+> was on a different host language, so the *executed* counts below are not strictly comparable
+> across that boundary; the analysed count is, because coverage analysis is static. Everything
+> below this line still carries its own original measurement date and has **not** been re-measured.
 
 > ✅ **Debug-forwarding prohibition guard measured (2026-09-08 — 100% pass rate):** `tests/Unit.DebugProhibition.Tests.ps1` adds **6** static AST tests for FR-017. It fails the build if any Active Directory or GroupPolicy invocation carries literal `-Debug` or splats `@PSBoundParameters`, which can forward `-Debug` invisibly. This improves safety, not coverage: the guard parses files but does not execute instrumented module commands, so coverage remains **87.63%** over the same CI-scoped 82-file module population.
 

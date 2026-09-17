@@ -44,19 +44,37 @@ To get started with TierModel, please refer to our comprehensive documentation:
 
 ## 🧪 Testing & Quality Assurance
 
-**Current Test Status: ✅ 1,994 passing / 0 failures (100%)** *(Last run: 2026-09-08)*
+**Current test status: 2,056 passing / 32 known failures** — measured on **German Windows 11
+against a German Active Directory**, 2026-09-16, commit `5ebe784`.
 
-| Test Suite | Test Files | Test Cases | Status | Coverage |
-|------------|-----------|------------|--------|----------|
-| **Unit Tests** | **26 files** (Pester) | **1,664 tests** | ✅ All pass | **87.63%** *(CI-scoped 82-file module population)* |
-| **Integration Tests** | **7 files** (Pester) | **330 tests** | ✅ All pass | **87.63%** *(CI-scoped 82-file module population)* |
-| **Manual Integration Tests** | **1 file** (Excel workbook) | **384 tests** | ✅ 100% Pass | **N/A** |
-| **Total** | **34 files** | **2,378 tests** | ✅ **100% passing** | **87.63%** *(CI-scoped 82-file module population)* |
+| Measure | Value | Measured on |
+|---|---|---|
+| **Automated tests** | **2,056 passing of 2,088** | German Windows 11 / PowerShell 7.6.6, Pester 5.9.0, 2026-09-16 |
+| **Command coverage** | **85.73%** (14,742 / 17,195) — clears the 80% CI gate | German lab host, `pwsh -NonInteractive`, 2026-09-17 |
+| **Manual integration tests** | 384, 100% pass | `tests/Manual.Integration.Tests.xlsx` |
+| **Test files** | 36 Pester files (29 unit, 7 integration) + 1 Excel workbook | counted on `main` |
+| **Exported functions** | 80 files in `modules/TierModel/public/` + 3 defined inline in `TierModel.psm1` = **83** | counted on `main` |
 
-### Test Coverage Highlights
-- ✅ **86/86** production PowerShell files in the product surface counted: 2 root `*-TierModel.ps1`, 82 under `modules\`, and 2 under `optional\`; CI coverage measures the CI-scoped 82-file module population
-- ✅ **1,994 / 1,994** automated test cases passing — 0 failures (Pester 5.9.0, 2026-09-08)
-- ✅ **87.63%** overall Pester-measured command coverage across the CI-scoped 82-file module population (aggregate clears the 80% CI gate; the gate is not per-file)
+**About the 32 failures.** They are host-language artefacts in the **test fixtures**, not product
+defects, and CI never sees them because CI runs English. 31 hard-code principal names
+(`BUILTIN\Administrators`, `BUILTIN\Users`, `Everyone`) that German Windows cannot translate, so
+`NTAccount(...).Translate()` throws and the code under test takes a path the test did not intend.
+The 32nd reads Domain Admin membership from the caller's real logon token — deliberately, so a
+string-typed SID cannot fake it — and therefore fails precisely *because* the lab session is a
+Domain Admin. Both classes are tracked in `CLAUDE.md`; repairing the 31 is its own change.
+
+**About the coverage figure.** It was 87.63% on 2026-09-08 and is 85.73% now. The localization work
+added code faster than tests reached it: the analysed population grew by **476 commands**
+(16,719 → 17,195). The two runs used different host languages, so the *executed* counts are not
+strictly comparable — the analysed count is, because coverage analysis is static. The population is
+CI's (`.github/workflows/ci.yml:133-136`): `modules/TierModel/*.psm1`,
+`modules/TierModel/public/*.ps1`, `optional/Update-TierModelMembership.ps1` — **82 files**
+(1 + 80 + 1). That 82 is a file count for coverage and is not the 83 exported functions above;
+the two are different things and both are right.
+
+> Both figures predate the 18 tests added with the parity comparison, so the suite on `main` is
+> larger than 2,088 today. The numbers above are what was measured, not what can be derived from
+> it by arithmetic.
 
 ### Running Tests
 ```powershell

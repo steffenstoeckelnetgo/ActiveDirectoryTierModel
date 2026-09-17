@@ -74,7 +74,7 @@ Two entry scripts, one module:
 |---|---|
 | `Deploy-TierModel.ps1` | Deploy with scoped execution (`-IncludeMsa`, `-IncludeGmsa`, `-IncludeDmsa`, `-IncludeWinLaps`, `-IncludeAuthSilos`, `-EnableAuditing`) |
 | `Audit-TierModel.ps1` | Audit / drift detection, same scope switches |
-| `modules/TierModel/` | 82 public functions, one per file under `public/` |
+| `modules/TierModel/` | **83 exported functions**: 80 files under `public/`, one function each, plus `Get-TierModel`, `Get-TierModelPlan` and `Test-TierModelConfig` defined inline in `TierModel.psm1`. `Unit.ModuleManifest.Tests.ps1` compares `FunctionsToExport` against **files + inline**, which is why 80 files and 83 exports are consistent (§4 trap 4). |
 | `config/*.json` | 19 config files — the declarative source of truth |
 | `config/gpo/` | 260 files of GPO backups (binary-ish; `.gitattributes` marks `*.admx`/`*.adml` binary) |
 | `optional/` | Scripts that are not part of a normal run |
@@ -530,13 +530,12 @@ to instruct the text diff; all three were corrected in PR #2.
 
 #### Housekeeping, not gating
 
-- **README test table (lines 47-59) and `docs/test-coverage.md` still carry 2026-09-08 figures**
-  (1,994 tests, 87.63 %). They are stale but dated and internally consistent, which is better than
-  half-updated. Refresh them together with the item 1 result, in one pass.
-- **The coverage figure's host is unconfirmed.** `85.73 % (14742 / 17195)` was reported on
-  2026-09-17. The analysed count matches the Linux run exactly (17195) and the executed count rose
-  by 1270, which is what running the SID-dependent tests would do — consistent with a Windows run,
-  but *nobody stated it*. Confirm it in one line before it is written into README as measured.
+- ~~**README and `docs/test-coverage.md` carry stale figures.**~~ **Refreshed 2026-09-17** with the
+  measured numbers and their host: suite **2,056 of 2,088** on German Windows, coverage
+  **85.73 % (14,742 / 17,195)** from the German lab host, owner-confirmed. Both files now say what
+  was measured on what, and both record that the figures predate the 18 tests added with the
+  parity comparison rather than deriving a newer total by arithmetic. When item 1 lands, the suite
+  line is the one to update.
 - **`New-TierModelGroup` with an empty plan** raises `GroupApplyFailed`: `$Plan.Actions |
   Where-Object` collapses to `$null` and `.Count` throws under `Set-StrictMode`. Pre-existing, its
   own concern, own issue.
@@ -634,8 +633,8 @@ Ordered. Items 1–3 are the actual acceptance gate.
    The figure is internally consistent with the Linux run below: **the same 17195 commands
    analysed** — coverage analysis is static, so the population does not vary by platform — with
    **1270 more executed**, which is what the SID-dependent tests do when they can actually run.
-   One caveat, recorded rather than assumed: **the host was not stated.** Confirm it came from the
-   German lab as `pwsh -NonInteractive` before writing it into README as measured.
+   **Host confirmed by the repository owner: the German lab host** (2026-09-17). The figure is
+   carried into `README.md` and `docs/test-coverage.md` as measured.
 
    It does **not** say the product is 85.73 % correct. Coverage counts commands a test touched at
    least once; correctness is the lab cycle in item 1 and the suite. See §6 *Start here*.
