@@ -43,9 +43,13 @@ authoritative tables; the headline per phase:
 | Audit | `TotalChecked: 433, Drift 0, Errors 0` — 100 % |
 | Localization report | 56 principals, 0 unresolved, 42 of them carrying a German directory name; **`No problems found.`** |
 
-**What is still open:** one measurement — code coverage against the CI population, on Windows. It
-is the only thing blocking the pull request. That, and everything open but not blocking, is in §6
-*Start here*.
+**What is still open.** The code is merged and the three CI gates are measured, coverage included
+(§6 item 4). What is *not* established is the standard the repository owner set on 2026-09-17:
+**the product must be demonstrably correct on a German Active Directory, at every change, not once
+by observation.** The lab cycle meets it for one domain; the suite does not yet meet it at all,
+because 31 of its ACL tests cannot execute on a German host. §6 *Start here* has the ordered work.
+**Do not tag a release until that list is closed** — the repository carries no tags yet, so the
+first one should mean something.
 
 ---
 
@@ -256,10 +260,10 @@ same harness** — not as proof of correctness.
 
 ---
 
-## 5. Current branch state
+## 5. What the localization change actually did
 
-Branch: **`claude/beautiful-galileo-skfp32`** — German/localized Active Directory support.
-Target version **2.2.0**. Spec and plan: `specs/008-german-language-support/`.
+Merged to `main` on 2026-09-17 (PR #1); this section is the record of the change, not of a branch.
+Version **2.2.0**, spec and plan in `specs/008-german-language-support/`.
 
 **Config is untouched:** 0 of 19 JSON files, 0 of 260 GPO backup files. The English names in the
 configuration became canonical *identifiers* resolved to well-known SIDs, instead of being
@@ -426,36 +430,94 @@ unverified is the *deployment*, not the resolver: see §6 item 5 and
 
 ### Start here — state of `main`, 2026-09-17
 
-§0 has the goal and the verified state. What is left here is the working detail. Two of the three
-CI gates are measured — the suite (item 1) and both PSScriptAnalyzer gates (item 3) — and the
-third is not. The work is merged, so nothing is blocked any more; the missing number is what
-stands between `main` and a tagged 2.2.0 release, and the repository carries no tags yet.
+The localization work is **merged** (PR #1) and all three CI gates are measured: suite
+**2056 of 2088** on a German host, PSScriptAnalyzer **0 findings / 0 errors**, coverage
+**85.73 %** against the CI population (item 4). Work happens on `main` directly (§0). The
+repository carries **no tags**, so nothing has been released.
 
-**The one measurement still missing:**
+**The standard the repository owner set on 2026-09-17, and the reason this list exists:**
 
-| | What | Where |
-|---|---|---|
-| **1** | **Coverage ≥ 80 % against the CI population**, on Windows | Snippet in item 4 below. Run it as `pwsh -NonInteractive`, or the suite stops at the `-PreferredDc` prompt. Linux floor 78.35 % proves nothing either way. |
+> The product must be **demonstrably** correct on a German Active Directory. Not observed once —
+> re-established by the suite at every change.
 
-**Then, in the same pass:** refresh the README test table (lines 47-59) and
-`docs/test-coverage.md` with that coverage figure *and* the measured suite counts
-(**2056 passed of 2088**, Windows, 2026-09-16). Both currently carry `2026-09-08` figures
-(1,994 tests, 87.63 %). They are stale but **dated and internally consistent**, so they are
-deliberately left alone until the coverage number exists — a half-updated table is worse than a
-clearly dated old one.
+Two numbers get confused here, so both are written down. **Coverage is not a pass rate:** 85.73 %
+says that share of commands was executed by some test at least once; it says nothing about
+correctness. The functional evidence is separate, and on the one domain measured it is complete —
+deploy 689/689 with 0 errors, second run 0 actions, audit **433 of 433** with 0 drift, principals
+**56 of 56** resolved, OU ACLs 105/105, GPOs 146/146 (§6 item 1). What the standard above is
+missing is not that evidence. It is that **the suite cannot reproduce it**, and that it rests on a
+single domain.
 
-**Open but not blocking:** Phase F (item 6, two read-only commands), the English-domain parity
-report (item 6), the completeness tests (item 5, **needs a code change and therefore
-confirmation**), German ADML content (item 7), GitHub Actions in the fork (item 8).
+**Do not tag a release until items 1–3 below are closed.**
 
-**Deferred to their own issues, deliberately not in this branch** — CONTRIBUTING requires one
-concern per PR:
+#### The work, ordered
 
-- The **32 pre-existing locale test failures** (item 2). They fail on `origin/main` on the same
-  host and live in files this branch does not touch.
-- `New-TierModelGroup` with an **empty plan** raises `GroupApplyFailed`:
-  `$Plan.Actions | Where-Object` collapses to `$null` and reading `.Count` on it throws under
-  `Set-StrictMode`. Found while writing the Converged tests (§5), pre-existing.
+**1. Bring 31 ACL tests onto SIDs so they execute on a German host.** *Tests only, no product
+code.* This is the gap that matters most: `Unit.OuAclOperations`, `Unit.MsaAclOperations`,
+`Unit.GmsaAclOperations`, `Unit.DmsaAclOperations` and `Unit.CanonicalAcl` carry **34 hard-coded
+principal names** between them (`'BUILTIN\Administrators'`, `'BUILTIN\Users'`, `'Everyone'`).
+German Windows cannot translate those, `NTAccount(...).Translate()` throws, and the code under
+test takes a path the test did not intend (§4 trap 7). The effect: **ACL behaviour — the
+security-relevant part — is currently not verified on the platform this project exists for.**
+
+The fix is mechanical and the pattern is proven: commit `4c84f4a` did exactly this for 8 tests in
+`Unit.WinLapsAclOperations` and `Integration.WinLapsDeployment` — replace the name with the SID
+(`'S-1-5-32-544'`, `'S-1-5-32-545'`, `'S-1-1-0'`, `'S-1-5-10'`) and put a `NOTE:` block at the top
+of the file saying why, so nobody "fixes" it back to a readable name.
+
+*Verification, both halves required:* every changed test must be **red without the change** (so a
+fixture is not quietly made vacuous), and the suite must go from **2056 to 2087** on the German
+host.
+
+*Why 2087 and not 2088:* the 32nd failure (`Unit.Prerequisites`) is not a fixture problem.
+`Test-TierModelPrerequisites` reads `IsDomainAdmin` from the real logon token on purpose, so a
+string-typed SID cannot fake membership (§4 trap 8) — it fails precisely **because the lab session
+is a Domain Admin**. On a DA host 2088 is unreachable without redesigning that test. Write 2087
+into the acceptance record rather than hiding the difference.
+
+**2. Write the completeness tests** (designed in `specs/008-german-language-support/plan.md`
+phase D, never written). This is what turns "observed once in a lab" into "asserted at every
+change", which is the owner's actual requirement:
+
+- every principal named in the **real** `config/` resolves through a *defined* path — not a name
+  lookup fallback;
+- **English and German fixtures produce identical SID sets**, both at the resolver and in the
+  generated `[Privilege Rights]`.
+
+The lab report's `Total: 56, Unresolved: 0` is the same claim as the first bullet, but measured
+once against one directory. A test makes it a standing guarantee.
+
+**3. Run Phase F** — two read-only commands, in §6 *Open questions* below. Does `Import-GPO` carry
+the source lab's `<SecurityGroups>` SIDs into the imported GPO's DACL? Expected inert, never
+verified. Minutes of work, and it is an open security question.
+
+**4. A second German domain, or say plainly that there is not one.** Everything measured comes
+from `int.promiseIT.de`: forest root, Windows 2025 domain, one DC, German Windows 11 as the admin
+host. Untested: child domains, multi-DC replication, RODC, an **English host against a German
+domain** (the mixed case the docs explicitly permit), and any language other than German. This is
+the difference between "works on that domain" and "works on German AD". If no second domain is
+available, that belongs in the release notes as an accepted limit, not left unsaid.
+
+**5. The English parity run.** The change altered behaviour for English deployments too — a failed
+Deny-Apply ACE is now a hard stop, `Converged` means something different, the GPO import retries.
+Nobody has run the runbook against an English domain since. The suite covers it with mocks; a live
+run is a different thing.
+
+#### Housekeeping, not gating
+
+- **README test table (lines 47-59) and `docs/test-coverage.md` still carry 2026-09-08 figures**
+  (1,994 tests, 87.63 %). They are stale but dated and internally consistent, which is better than
+  half-updated. Refresh them together with the item 1 result, in one pass.
+- **The coverage figure's host is unconfirmed.** `85.73 % (14742 / 17195)` was reported on
+  2026-09-17. The analysed count matches the Linux run exactly (17195) and the executed count rose
+  by 1270, which is what running the SID-dependent tests would do — consistent with a Windows run,
+  but *nobody stated it*. Confirm it in one line before it is written into README as measured.
+- **`New-TierModelGroup` with an empty plan** raises `GroupApplyFailed`: `$Plan.Actions |
+  Where-Object` collapses to `$null` and `.Count` throws under `Set-StrictMode`. Pre-existing, its
+  own concern, own issue.
+- **Enabling GitHub Actions** (item 8) would run all three gates automatically on every push to
+  `main` — which, given that work now happens directly on `main` with no other safety net, is worth
+  more here than in a repository that branches.
 
 ---
 
@@ -539,9 +601,19 @@ Ordered. Items 1–3 are the actual acceptance gate.
    A2a excludes and A2b includes on purpose: `New-TierModel` (`TierModel.psm1:870`),
    `Set-TierModel` (`:970`) and `New-TierModelGptTmplContent` (`:1`). The last one only builds an
    INF string and changes nothing — the rule judges the verb, not the behaviour. Nothing to fix.
-4. **Coverage** against the CI population, ≥ 80%. The population and the gate are in
-   `.github/workflows/ci.yml:133-136` and `:155-173`: `modules/TierModel/*.psm1`,
+4. ~~**Coverage** against the CI population, ≥ 80%.~~ **Measured 2026-09-17: `85.73 %
+   (14742 / 17195)` — the gate is met with 5.7 points to spare.** The population and the gate are
+   in `.github/workflows/ci.yml:133-136` and `:155-173`: `modules/TierModel/*.psm1`,
    `modules/TierModel/public/*.ps1`, `optional/Update-TierModelMembership.ps1`.
+
+   The figure is internally consistent with the Linux run below: **the same 17195 commands
+   analysed** — coverage analysis is static, so the population does not vary by platform — with
+   **1270 more executed**, which is what the SID-dependent tests do when they can actually run.
+   One caveat, recorded rather than assumed: **the host was not stated.** Confirm it came from the
+   German lab as `pwsh -NonInteractive` before writing it into README as measured.
+
+   It does **not** say the product is 85.73 % correct. Coverage counts commands a test touched at
+   least once; correctness is the lab cycle in item 1 and the suite. See §6 *Start here*.
 
    **Linux floor, measured on `4812e17`: 78.35% (13472 of 17195 commands), with 1719 of 2082
    tests passing.** That is a *lower bound*, not the CI number: the 363 tests that cannot run
