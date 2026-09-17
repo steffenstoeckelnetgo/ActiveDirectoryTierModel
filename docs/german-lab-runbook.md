@@ -462,10 +462,17 @@ Read-only. Writes one JSON file containing:
 
 ### Optional but decisive: the parity proof
 
-If an **English** lab domain is also available, run the same script there and diff the
-`PrivilegeRights` sections of the two reports. **Identical SID sets** mean localization changed
-nothing about the security configuration — the claim this whole branch rests on, and the one
-thing no unit test can establish.
+If an **English** lab domain is also available, run this whole runbook there too and then compare
+the two reports. That comparison is the claim this work rests on, and the one thing no unit test
+can establish. **`docs/parity-lab-runbook.md` has the procedure.**
+
+> **Do not diff the two reports as text.** An earlier version of this section said to diff the
+> `PrivilegeRights` sections directly; that was wrong. Every domain-scoped principal there carries
+> its own domain's SID as a prefix, so `*S-1-5-21-<A>-512` and `*S-1-5-21-<B>-512` — the same
+> Domain Admins — read as a difference. In the measured lab data that is 1651 SID entries across
+> 29 GPOs of false differences. `optional/Compare-TierModelDeploymentReport.ps1` normalises each
+> report's own domain SID first and leaves a *foreign* one verbatim, because a foreign SID is a
+> finding rather than noise.
 
 ---
 
