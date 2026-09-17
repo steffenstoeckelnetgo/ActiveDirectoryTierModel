@@ -19,14 +19,16 @@ became canonical *identifiers* resolved through the **invariant SID** (rule 2.4)
 configuration set deploys in any language and keeps working where a built-in group has been
 renamed.
 
-**Where the work is — check this before reading on.** All of it lives on the branch
-`claude/beautiful-galileo-skfp32` (version 2.2.0, spec in `specs/008-german-language-support/`).
-**None of it is on `main`:** not this file, not `docs/german-lab-runbook.md`, not
-`optional/Test-TierModelLocalizedDeployment.ps1`, not the two new test files — 8 new and 39
-changed files in total. If `git branch --show-current` does not answer
-`claude/beautiful-galileo-skfp32`, you are reading the product *before* this work, and
-`README.md:141` there still says *"Language: English (`en-US`) only"*. That line is stale relative
-to this effort, not a statement about the project. Check the branch out first.
+**Where the work is: on `main`.** It landed there on 2026-09-17 through
+[PR #1](https://github.com/steffenstoeckelnetgo/ActiveDirectoryTierModel/pull/1) — 8 new and 39
+changed files, version 2.2.0, spec in `specs/008-german-language-support/`. There is no
+long-lived feature branch to check out; by the repository owner's decision work happens on `main`
+and short-lived branches merge promptly.
+
+**What that costs, so nobody is surprised by it:** GitHub Actions is disabled in this fork (§3),
+so **nothing checks a commit before it is on `main`** — no lint, no Pester, no coverage gate. And
+there are no release tags, so `main` *is* the deployable state. Both are reasons to run the
+repo's own checks yourself before pushing, not to push and find out.
 
 **Status: functionally complete, verified end to end on a live green-field German domain**
 (`int.promiseIT.de`, German Windows 11 / PowerShell 7.6.6, 2026-09-16). §6 item 1 carries the
@@ -422,15 +424,14 @@ unverified is the *deployment*, not the resolver: see §6 item 5 and
 
 ## 6. Next steps
 
-### Start here — state at the tip of `claude/beautiful-galileo-skfp32`, 2026-09-17
+### Start here — state of `main`, 2026-09-17
 
 §0 has the goal and the verified state. What is left here is the working detail. Two of the three
 CI gates are measured — the suite (item 1) and both PSScriptAnalyzer gates (item 3) — and the
-third is not. Working tree clean, no pull request yet; by the branch owner's decision the PR waits
-until every CI gate has a measured number. (`git log --oneline origin/main..HEAD` for the commit
-list; the tip when this was written was `d9d15d8`, which recorded the lint results.)
+third is not. The work is merged, so nothing is blocked any more; the missing number is what
+stands between `main` and a tagged 2.2.0 release, and the repository carries no tags yet.
 
-**One measurement is missing, and it is the only thing blocking the PR:**
+**The one measurement still missing:**
 
 | | What | Where |
 |---|---|---|
