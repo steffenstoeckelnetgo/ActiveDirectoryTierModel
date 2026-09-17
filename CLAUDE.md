@@ -442,9 +442,24 @@ Ordered. Items 1–3 are the actual acceptance gate.
 
    Not a regression, and not open: `Unit.ModuleManifest` is already only 6 of 63 green on the
    **baseline** under Linux, so that file is platform-broken rather than affected by this change.
-3. **Run PSScriptAnalyzer.** Not obtainable in the Linux container (absent from nuget.org;
-   PowerShell Gallery and GitHub releases blocked by the network policy). It is a CI gate, so it
-   must run somewhere before merge.
+3. ~~**Run PSScriptAnalyzer.**~~ **Done — both gates pass on the German lab host,
+   2026-09-17, commit `c58dbcf`.** Still not obtainable in the Linux container (absent from
+   nuget.org; PowerShell Gallery and GitHub releases blocked by the network policy), so it runs
+   on the lab. `docs/german-lab-runbook.md` A2 is the repeatable form.
+
+   | Gate | CI definition | Measured |
+   |---|---|---|
+   | **A2a** — main | `ci.yml:64-83`, fails on *any* finding (`exit $results.Count`) | **`Findings: 0`** over `modules/TierModel`, `Deploy-TierModel.ps1`, `Audit-TierModel.ps1` with the 13 excluded rules |
+   | **A2b** — security | `ci.yml:290-305`, fails **only** on `Severity -eq 'Error'` | **3 findings, 0 of them Error** |
+
+   The A2a zero is confirmed, not assumed: the identical scan **without** `-ExcludeRule`
+   returned **2757** findings, so the analyzer demonstrably read the files. That check is not
+   optional — an empty result and "the analyzer never ran" produce the same empty CSV.
+
+   The three A2b warnings are all `PSUseShouldProcessForStateChangingFunctions`, the rule that
+   A2a excludes and A2b includes on purpose: `New-TierModel` (`TierModel.psm1:870`),
+   `Set-TierModel` (`:970`) and `New-TierModelGptTmplContent` (`:1`). The last one only builds an
+   INF string and changes nothing — the rule judges the verb, not the behaviour. Nothing to fix.
 4. **Coverage** against the CI population, ≥ 80%. The population and the gate are in
    `.github/workflows/ci.yml:133-136` and `:155-173`: `modules/TierModel/*.psm1`,
    `modules/TierModel/public/*.ps1`, `optional/Update-TierModelMembership.ps1`.
