@@ -22,13 +22,21 @@ renamed.
 **Where the work is: on `main`.** It landed there on 2026-09-17 through
 [PR #1](https://github.com/steffenstoeckelnetgo/ActiveDirectoryTierModel/pull/1) — 8 new and 39
 changed files, version 2.2.0, spec in `specs/008-german-language-support/`. There is no
-long-lived feature branch to check out; by the repository owner's decision work happens on `main`
-and short-lived branches merge promptly.
+long-lived feature branch left to check out.
 
-**What that costs, so nobody is surprised by it:** GitHub Actions is disabled in this fork (§3),
+**How to work here, decided by the repository owner on 2026-09-17:**
+
+| Change | Where |
+|---|---|
+| **Code — product *or* tests** | a **short-lived branch, then a pull request**. One concern per branch, merged promptly, branch deleted after. |
+| **Documentation-only corrections** | directly on `main`. |
+
+**The reason, because it is what carries the rule:** GitHub Actions is disabled in this fork (§3),
 so **nothing checks a commit before it is on `main`** — no lint, no Pester, no coverage gate. And
-there are no release tags, so `main` *is* the deployable state. Both are reasons to run the
-repo's own checks yourself before pushing, not to push and find out.
+there are no release tags, so `main` *is* the deployable state of a tool that writes ACLs, GPOs and
+authentication policies into a production directory. The pull request is therefore the only place a
+change is ever read as a whole. Run the repo's own checks yourself before pushing; do not push and
+find out.
 
 **Status: functionally complete, verified end to end on a live green-field German domain**
 (`int.promiseIT.de`, German Windows 11 / PowerShell 7.6.6, 2026-09-16). §6 item 1 carries the
@@ -453,7 +461,7 @@ single domain.
 #### The work, ordered
 
 **1. Bring 31 ACL tests onto SIDs so they execute on a German host.** *Tests only, no product
-code.* This is the gap that matters most: `Unit.OuAclOperations`, `Unit.MsaAclOperations`,
+code.* Branch: `fix/localized-acl-test-fixtures`. This is the gap that matters most: `Unit.OuAclOperations`, `Unit.MsaAclOperations`,
 `Unit.GmsaAclOperations`, `Unit.DmsaAclOperations` and `Unit.CanonicalAcl` carry **34 hard-coded
 principal names** between them (`'BUILTIN\Administrators'`, `'BUILTIN\Users'`, `'Everyone'`).
 German Windows cannot translate those, `NTAccount(...).Translate()` throws, and the code under
@@ -476,7 +484,9 @@ is a Domain Admin**. On a DA host 2088 is unreachable without redesigning that t
 into the acceptance record rather than hiding the difference.
 
 **2. Write the completeness tests** (designed in `specs/008-german-language-support/plan.md`
-phase D, never written). This is what turns "observed once in a lab" into "asserted at every
+phase D, never written). Branch: `test/principal-completeness` — a separate branch and a separate
+pull request from item 1, because `CONTRIBUTING.md` wants one concern per PR and the two are
+verified against different things. This is what turns "observed once in a lab" into "asserted at every
 change", which is the owner's actual requirement:
 
 - every principal named in the **real** `config/` resolves through a *defined* path — not a name
