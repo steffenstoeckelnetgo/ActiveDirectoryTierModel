@@ -32,6 +32,7 @@ Every command below was checked against the `param()` block of the script it cal
 | `LAPS` module | Only needed for `-IncludeWinLaps`. Present on Windows Server 2019+ and on clients with the Windows LAPS update. |
 | Domain Admin | Required by `Test-TierModelPrerequisites`. |
 | PowerShell 7 preferred | The suite also runs on 5.1, but CI uses `pwsh`. |
+| `Pester` 5.9.0 and `PSScriptAnalyzer` | Not shipped with Windows. Both are installed by the setup block in Phase A below — Pester for A1, PSScriptAnalyzer for A2. Skipping that block is why A2 fails with *"The term 'Invoke-ScriptAnalyzer' is not recognized"*. |
 
 ---
 
@@ -149,6 +150,28 @@ pwsh -NonInteractive -File .\tests\Invoke-AllTests.ps1 -FailedOnly   # failures 
 
 `.github/workflows/ci.yml` runs PSScriptAnalyzer **twice**, and both have to pass. Run from the
 repository root, or the relative paths below analyse nothing.
+
+**The module comes from the setup block in Phase A** (`Install-Module PSScriptAnalyzer -Force
+-Scope CurrentUser`), which is easy to skip when the clone is already there from an earlier run.
+Confirm it before anything else — the same line the anti-vacuity check below uses:
+
+```powershell
+Get-Module PSScriptAnalyzer -ListAvailable | Select-Object Name, Version
+```
+
+Nothing back means the module is missing, and `Invoke-ScriptAnalyzer` then fails with *"The term
+'Invoke-ScriptAnalyzer' is not recognized"*. Install it the way CI does:
+
+```powershell
+Set-PSRepository PSGallery -InstallationPolicy Trusted
+Install-Module PSScriptAnalyzer -Force -Scope CurrentUser
+```
+
+If the PowerShell Gallery is unreachable from the lab host, fetch it on a machine that does have
+access and carry the folder over — `Save-Module -Name PSScriptAnalyzer -Path <dir>`, then copy
+the resulting `PSScriptAnalyzer` directory into `$HOME\Documents\PowerShell\Modules` on the lab
+host. There is no usable package mirror for this module: unlike Pester it is not obtainable from
+`api.nuget.org`.
 
 **A2a — the main gate.** Fails on *any* finding. `optional/` is deliberately not linted.
 
