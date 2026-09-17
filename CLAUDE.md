@@ -213,10 +213,13 @@ Run: `.\tests\Invoke-AllTests.ps1` (`-TestType Unit|Integration`, `-FailedOnly`,
 3. **`Get-ADGroup -Filter` does not throw when nothing matches.** It returns empty. A `catch`
    around it is not a not-found handler. `Resolve-ADPrincipalSid` documents this at its
    `Get-ADObject` call.
-4. **`tests/Unit.ModuleManifest.Tests.ps1` counts *files* in `public/` against
-   `FunctionsToExport`,** not runtime exports. So: a new **file** in `public/` needs a manifest
-   entry; extra **unexported functions inside an existing file** are fine and are the normal way
-   to add private helpers. `TierModel.psm1` lines 24-40 explain this.
+4. **`tests/Unit.ModuleManifest.Tests.ps1` counts *files in `public/` plus functions defined
+   inline in `TierModel.psm1`* against `FunctionsToExport`,** not runtime exports. That is why
+   **80 files and 83 exports are consistent**: `Get-TierModel`, `Get-TierModelPlan` and
+   `Test-TierModelConfig` live in the `.psm1` (§1). So: a new **file** in `public/` needs a
+   manifest entry, and so does a new **exported** function added inline; extra **unexported**
+   functions inside an existing file are fine and are the normal way to add private helpers.
+   `TierModel.psm1` lines 24-40 explain this.
 5. **Release notes must carry an entry for the manifest's own `ModuleVersion`.** Bumping
    `ModuleVersion` without adding a matching `ReleaseNotes` entry fails a test — and three places
    pin the version: `TierModel.psd1`, `tests/Unit.ModuleManifest.Tests.ps1`,
@@ -299,7 +302,7 @@ Three further fixes came out of actually executing the code rather than reading 
 - `Resolve-TierModelLapsPrincipal` discarded an already-read `sAMAccountName` when the SID
   normalisation in the same `try` failed, which blocked the entire Windows LAPS deployment.
 
-`optional/Test-TierModelLocalizedDeployment.ps1` is also part of this branch: a read-only
+`optional/Test-TierModelLocalizedDeployment.ps1` came with this change: a read-only
 post-deployment report covering what the product audit does not (§6 item 6).
 
 Two test files were then brought onto the new contracts, after the German Windows run showed
@@ -528,6 +531,47 @@ comparison normalises each report's own domain SID first and leaves a *foreign* 
 because a foreign SID is the finding rather than the noise. Three places in this repository used
 to instruct the text diff; all three were corrected in PR #2.
 
+#### Next session: run the parity test
+
+This is the agreed next piece of work, and it is the one that closes item 5. **The session does
+not deploy anything.** The repository owner drives two lab domains; the session's job is to say
+what to run, check each output against the preconditions below, and compare the two reports at the
+end. `docs/parity-lab-runbook.md` is the full procedure — this block is what to hold in mind while
+walking someone through it.
+
+**Order, and what each side must show before the comparison means anything:**
+
+| Side | What it is | Must report |
+|---|---|---|
+| **German** (`int.promiseIT.de`) | already deployed, so this is an **idempotency pass, not a rebuild** | `Applied: 0`, `Converged: True`; audit `Drift 0 / Errors 0` |
+| **English** | first deployment | deploy `Errors: 0`; **second run** `Applied: 0 / Converged: True`; audit `Drift 0 / Errors 0` |
+
+*Why the German side is cheap:* both domains must report from the same, current commit, and the
+German figures in item 1 predate `e5a9a67`. But that commit is **purely reporting** — its only
+changed lines assign `$overallConverged`, `$standaloneConverged` and `$converged`, and those are
+read solely for the console summary (`Deploy-TierModel.ps1:2843`, `:3563`) and as a returned field
+(`:1726`). No condition gates work on them, so the directory's state is untouched and a re-run
+applies nothing. Do not let anyone rebuild that domain for this.
+
+Comparing a finished deployment against a half-finished one produces differences that are about
+completeness, not about language. That is why the preconditions come first.
+
+**Then compare** — `optional/Compare-TierModelDeploymentReport.ps1 -ReferencePath .\parity-en.json
+-DifferencePath .\parity-de.json`. Never a text diff; the reason is in item 5.
+
+**Bring back:** `parity-en.json`, `parity-de.json`, and the comparison's console output (it also
+writes its own JSON).
+
+**Reading the result.** `No differences.` is the parity proof — it establishes the two deployments
+are **the same**, not that either is **correct**; correctness is what each domain's own audit
+shows. It holds for those two domains at that commit, not for every language or topology. Record
+it in §6 item 6 as a Phase F entry with the commit and both domain names, and add a `CHANGELOG`
+line. Any difference: read it by `Kind` — the table in `docs/parity-lab-runbook.md` §3 says which
+are expected and which are defects.
+
+**What this run does not close:** items 1 and 2 (the 31 ACL test fixtures, the completeness
+tests). Both are still open afterwards, and §0 says no tag until they are.
+
 #### Housekeeping, not gating
 
 - ~~**README and `docs/test-coverage.md` carry stale figures.**~~ **Refreshed 2026-09-17** with the
@@ -576,9 +620,11 @@ Ordered. Items 1–3 are the actual acceptance gate.
    across those three is not derivable from the uploaded logs, because the plan phase records
    the GPO sub-counts only as the sum 442.
 2. **The 41 failures, classified.** Eight belonged to this branch and are fixed (§5). The
-   remaining **32 are pre-existing** — they fail on `origin/main` on the same host, they live in
-   files this branch does not touch, and their causes are the host's language and the session's
-   own token, not this change:
+   remaining **32 are pre-existing** — measured against the pre-localization baseline, which at
+   the time was `origin/main`, they failed there on the same host too; they live in files the
+   change does not touch; and their causes are the host's language and the session's own token,
+   not this change. (`main` now *carries* the localization work, so re-checking that baseline
+   today means checking out a commit before PR #1, not `main`.):
 
    | File | × | Cause |
    |---|--:|---|
@@ -669,8 +715,6 @@ Ordered. Items 1–3 are the actual acceptance gate.
    `Repair-TierModelCanonicalAcl.ps1` (182), `Test-TierModelAdmx.ps1` (140),
    `TierModel.psm1` (137). Those counts are themselves Linux figures and shrink on Windows.
 
-   Then update the README test table — it is deliberately still at its last *measured* values
-   rather than estimated.
 5. **Add the completeness tests** designed but not yet written (`specs/008-german-language-support/plan.md`,
    phase D): every principal in the real config must resolve by a defined path; English and
    German fixtures must produce **identical SID sets**, both at the resolver and in the generated
@@ -876,7 +920,8 @@ Ordered. Items 1–3 are the actual acceptance gate.
 
 ### The Linux regression harness — how to rebuild it
 
-Every change on this branch was gated on *"0 regressions against the previous commit"* measured
+Every change in the localization work was gated on *"0 regressions against the previous
+commit"* measured
 by a small harness that **lives in the session scratchpad and dies with the session**. It is not
 in the repository, on purpose: it is Linux tooling for a Windows-authored suite, and §4 is
 explicit that its result is a **comparison instrument, never proof of correctness**. Rebuilding
@@ -907,7 +952,7 @@ Four parts:
    duplicates and its totals will not match Pester's own count — the regression list is still
    correct, the totals are not.
 
-Expected output shape on this branch: **0 regressions**, and the head/base counts differ only by
+Expected output shape: **0 regressions**, and the head/base counts differ only by
 tests you added. Roughly 350 of ~2090 fail on Linux for platform reasons on *both* sides
 (§4, *Running the suite on Linux*).
 
