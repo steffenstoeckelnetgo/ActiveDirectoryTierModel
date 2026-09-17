@@ -511,7 +511,22 @@ available, that belongs in the release notes as an accepted limit, not left unsa
 **5. The English parity run.** The change altered behaviour for English deployments too — a failed
 Deny-Apply ACE is now a hard stop, `Converged` means something different, the GPO import retries.
 Nobody has run the runbook against an English domain since. The suite covers it with mocks; a live
-run is a different thing.
+run is a different thing. **An English lab domain is available** (owner, 2026-09-17), and the
+tooling now exists: `docs/parity-lab-runbook.md` is the procedure and
+`optional/Compare-TierModelDeploymentReport.ps1` does the comparison (PR #2).
+
+*The precondition that is easy to skip and fatal to the result:* **both domains must deploy from
+the same, current commit.** The German figures in item 1 come from `5ebe784`; `e5a9a67` — the
+`Converged` fix — landed afterwards and touches `Deploy-TierModel.ps1` and
+`New-TierModelGroup.ps1`. Comparing across that boundary compares two different products. The
+German side therefore has to be re-run too; this is not a repeat out of caution.
+
+*And do not diff the two reports as text.* Every domain-scoped principal in `[Privilege Rights]`
+carries its own domain's SID as a prefix, so the same Domain Admins reads differently on the two
+domains — 1651 SID entries across 29 GPOs of false differences in the measured lab data. The
+comparison normalises each report's own domain SID first and leaves a *foreign* one verbatim,
+because a foreign SID is the finding rather than the noise. Three places in this repository used
+to instruct the text diff; all three were corrected in PR #2.
 
 #### Housekeeping, not gating
 
@@ -795,7 +810,8 @@ Ordered. Items 1–3 are the actual acceptance gate.
      `OU=Domain Controllers,DC=int,DC=promiseIT,DC=de` — **not** localized on this domain.
 
    **Still open in Phase E:** nothing, other than running the same report on an English domain
-   and diffing the `PrivilegeRights` sections, which is the parity proof. Use
+   and comparing the two with `optional/Compare-TierModelDeploymentReport.ps1` — the parity
+   proof, and **not** a text diff, for the reason in *Start here* item 5. Use
    `tests/Manual.Integration.Tests.xlsx` for the manual checklist.
 7. **German ADML content.** `optional/New-TierModelAdmlManifest.ps1` and the procedure in
    `docs/admx-management.md` are ready; the `.adml` files are Microsoft redistributables and must
