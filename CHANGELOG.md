@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`optional/Compare-TierModelDeploymentReport.ps1`: the English/localized parity proof.**
+  Compares two `Test-TierModelLocalizedDeployment` reports and establishes that the same
+  configuration produces the same security configuration on both domains. It is not a diff, and
+  it cannot be: every domain-scoped principal in `[Privilege Rights]` carries its own domain's
+  SID as a prefix, so the same Domain Admins reads differently on the two domains and a textual
+  comparison reports all 1651 SID entries of the measured lab data as differences. Each report's
+  own domain SID is normalised to a placeholder first; a SID belonging to *neither* domain stays
+  verbatim, because a foreign SID in the settings is a finding rather than noise. Principal
+  resolution is compared by SID and by source and deliberately **not** by directory name —
+  `Domain Admins` reading `Domänen-Admins` is the intended outcome, and flagging it would fail
+  the proof on the thing it exists to demonstrate. GPOs are joined by display name, since a GPO's
+  GUID differs per domain by construction. Exit code 0 when the reports agree, 1 when they do
+  not. `tests/Unit.ParityComparison.Tests.ps1` (18 cases) and `docs/parity-lab-runbook.md` come
+  with it.
 - **German (and any localized) Active Directory support.** `Deploy-TierModel` and
   `Audit-TierModel` now run against a domain installed in any language, from a host
   installed in any language. The English names in `config/*.json` are treated as
@@ -30,6 +44,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fixture where every English name lookup fails, proving no code path depends on the name.
 
 ### Fixed
+- **Three places instructed a comparison that cannot work.** The parity section of
+  `docs/german-lab-runbook.md`, the description in `Test-TierModelLocalizedDeployment.ps1` and
+  that script's closing console lines all said to diff the two reports' `PrivilegeRights`
+  sections directly and expect identical SID sets. Following that instruction produces a wall of
+  false differences, for the reason above. All three now point at the comparison script and say
+  why a text diff is wrong.
 - **`Converged` in the deployment summary now means "nothing changed", not "nothing
   failed".** Both consolidated summaries AND-ed the executors' own `Converged` flags, and
   those flags carry two different meanings: `New-TierModelOu` and `New-TierModelGroup`

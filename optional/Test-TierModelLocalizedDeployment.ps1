@@ -44,9 +44,14 @@ param(
        so its absence has never been detectable after the fact. This reads the GPC security
        descriptor and checks for it.
 
-    It also captures the [Privilege Rights] lines from SYSVOL. Those are SIDs, so a run against a
-    German domain and a run against an English one can be diffed directly: identical SID sets are
-    the proof that localization changed nothing about the security configuration.
+    It also captures the [Privilege Rights] lines from SYSVOL. A run against a German domain and
+    a run against an English one, compared, are the proof that localization changed nothing about
+    the security configuration -- but they CANNOT be diffed directly, and an earlier version of
+    this paragraph said they could. Every domain-scoped principal there carries its own domain's
+    SID as a prefix, so the same principal reads differently on the two domains and a textual
+    diff reports every one of them as a difference. Use
+    optional/Compare-TierModelDeploymentReport.ps1, which normalises each report's own domain SID
+    before comparing and leaves a foreign one verbatim.
 
     EVERYTHING HERE IS READ-ONLY. No directory object, GPO, SYSVOL file or ACL is written. The
     only file created is the report.
@@ -638,5 +643,7 @@ else {
 }
 Write-Host "Report: $OutputPath" -ForegroundColor Cyan
 Write-Host ""
-Write-Host "To prove the localization claim, run this on an ENGLISH domain too and diff the" -ForegroundColor DarkGray
-Write-Host "PrivilegeRights sections: the SID sets must be identical." -ForegroundColor DarkGray
+Write-Host "To prove the localization claim, run this on an ENGLISH domain too, then compare the" -ForegroundColor DarkGray
+Write-Host "two reports with optional/Compare-TierModelDeploymentReport.ps1. Do not diff them as" -ForegroundColor DarkGray
+Write-Host "text: every domain-scoped SID carries its own domain's prefix, so a textual diff" -ForegroundColor DarkGray
+Write-Host "reports the same principal as different. The comparison normalises that first." -ForegroundColor DarkGray
