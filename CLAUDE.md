@@ -6,6 +6,47 @@ says so explicitly.
 
 ---
 
+## 0. What this working copy is for — read this first
+
+**The goal.** Make `Deploy-TierModel.ps1` and `Audit-TierModel.ps1` deploy and audit against an
+Active Directory installed in **any** language, from a host installed in any language — in
+practice, and as actually tested, **German Windows against a German domain**. Upstream refuses to
+run outside English and enforces that with two fail-fast prerequisite gates.
+
+**The one design decision everything else follows from:** the configuration is **not translated**.
+`config/` is untouched — 0 of 19 JSON files, 0 of 260 GPO backup files. The English names in it
+became canonical *identifiers* resolved through the **invariant SID** (rule 2.4), so one
+configuration set deploys in any language and keeps working where a built-in group has been
+renamed.
+
+**Where the work is — check this before reading on.** All of it lives on the branch
+`claude/beautiful-galileo-skfp32` (version 2.2.0, spec in `specs/008-german-language-support/`).
+**None of it is on `main`:** not this file, not `docs/german-lab-runbook.md`, not
+`optional/Test-TierModelLocalizedDeployment.ps1`, not the two new test files — 8 new and 39
+changed files in total. If `git branch --show-current` does not answer
+`claude/beautiful-galileo-skfp32`, you are reading the product *before* this work, and
+`README.md:141` there still says *"Language: English (`en-US`) only"*. That line is stale relative
+to this effort, not a statement about the project. Check the branch out first.
+
+**Status: functionally complete, verified end to end on a live green-field German domain**
+(`int.promiseIT.de`, German Windows 11 / PowerShell 7.6.6, 2026-09-16). §6 item 1 carries the
+authoritative tables; the headline per phase:
+
+| Phase | Result |
+|---|---|
+| Test suite, Windows | **2056 passed of 2088** — the 32 failures are pre-existing, classified in §6 item 2 |
+| Plan | 719 actions |
+| Deploy | **`Applied: 689, Skipped: 0, Errors: 0`** |
+| Idempotency, second run | `Applied: 0, Errors: 0, Converged: True` |
+| Audit | `TotalChecked: 433, Drift 0, Errors 0` — 100 % |
+| Localization report | 56 principals, 0 unresolved, 42 of them carrying a German directory name; **`No problems found.`** |
+
+**What is still open:** one measurement — code coverage against the CI population, on Windows. It
+is the only thing blocking the pull request. That, and everything open but not blocking, is in §6
+*Start here*.
+
+---
+
 ## 1. What this project is
 
 A declarative PowerShell framework that **deploys and audits an Active Directory Tier Model**
@@ -25,7 +66,8 @@ Two entry scripts, one module:
 | `optional/` | Scripts that are not part of a normal run |
 
 This is **upstream `microsoft/ActiveDirectoryTierModel`, forked**. The fork is
-`steffenstoeckelnetgo/ActiveDirectoryTierModel`.
+`steffenstoeckelnetgo/ActiveDirectoryTierModel`, and it exists to lift the English-only
+restriction — see §0.
 
 ---
 
@@ -382,13 +424,11 @@ unverified is the *deployment*, not the resolver: see §6 item 5 and
 
 ### Start here — state at the tip of `claude/beautiful-galileo-skfp32`, 2026-09-17
 
-The branch is **functionally complete and verified on a green-field German domain**. Deployment,
-idempotency, audit and the localization report all pass (item 1 below carries the numbers), and
-two of the three CI gates are measured: the suite (item 1) and both PSScriptAnalyzer gates
-(item 3). Working tree clean, no pull request yet — by the
-branch owner's decision the PR waits until every CI gate has a measured number.
-(`git log --oneline origin/main..HEAD` for the commit list; the tip when this was written was
-`d9d15d8`, which recorded the lint results.)
+§0 has the goal and the verified state. What is left here is the working detail. Two of the three
+CI gates are measured — the suite (item 1) and both PSScriptAnalyzer gates (item 3) — and the
+third is not. Working tree clean, no pull request yet; by the branch owner's decision the PR waits
+until every CI gate has a measured number. (`git log --oneline origin/main..HEAD` for the commit
+list; the tip when this was written was `d9d15d8`, which recorded the lint results.)
 
 **One measurement is missing, and it is the only thing blocking the PR:**
 
