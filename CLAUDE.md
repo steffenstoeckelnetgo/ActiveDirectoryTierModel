@@ -380,6 +380,44 @@ unverified is the *deployment*, not the resolver: see §6 item 5 and
 
 ## 6. Next steps
 
+### Start here — state at the tip of `claude/beautiful-galileo-skfp32`, 2026-09-17
+
+The branch is **functionally complete and verified on a green-field German domain**. Deployment,
+idempotency, audit and the localization report all pass (item 1 below carries the numbers), and
+two of the three CI gates are measured: the suite (item 1) and both PSScriptAnalyzer gates
+(item 3). Working tree clean, no pull request yet — by the
+branch owner's decision the PR waits until every CI gate has a measured number.
+(`git log --oneline origin/main..HEAD` for the commit list; the tip when this was written was
+`d9d15d8`, which recorded the lint results.)
+
+**One measurement is missing, and it is the only thing blocking the PR:**
+
+| | What | Where |
+|---|---|---|
+| **1** | **Coverage ≥ 80 % against the CI population**, on Windows | Snippet in item 4 below. Run it as `pwsh -NonInteractive`, or the suite stops at the `-PreferredDc` prompt. Linux floor 78.35 % proves nothing either way. |
+
+**Then, in the same pass:** refresh the README test table (lines 47-59) and
+`docs/test-coverage.md` with that coverage figure *and* the measured suite counts
+(**2056 passed of 2088**, Windows, 2026-09-16). Both currently carry `2026-09-08` figures
+(1,994 tests, 87.63 %). They are stale but **dated and internally consistent**, so they are
+deliberately left alone until the coverage number exists — a half-updated table is worse than a
+clearly dated old one.
+
+**Open but not blocking:** Phase F (item 6, two read-only commands), the English-domain parity
+report (item 6), the completeness tests (item 5, **needs a code change and therefore
+confirmation**), German ADML content (item 7), GitHub Actions in the fork (item 8).
+
+**Deferred to their own issues, deliberately not in this branch** — CONTRIBUTING requires one
+concern per PR:
+
+- The **32 pre-existing locale test failures** (item 2). They fail on `origin/main` on the same
+  host and live in files this branch does not touch.
+- `New-TierModelGroup` with an **empty plan** raises `GroupApplyFailed`:
+  `$Plan.Actions | Where-Object` collapses to `$null` and reading `.Count` on it throws under
+  `Set-StrictMode`. Found while writing the Converged tests (§5), pre-existing.
+
+---
+
 Ordered. Items 1–3 are the actual acceptance gate.
 
 1. ~~**Run the suite on Windows.**~~ **Done, twice.** German Windows 11 / PowerShell 7.6.6
@@ -697,6 +735,43 @@ Ordered. Items 1–3 are the actual acceptance gate.
   `git clone`/`push` over `github.com` works.
 - PowerShell 7.6 on Linux **does** ship `System.DirectoryServices`, so its type and enum literals
   resolve — but runtime directory operations and `SecurityIdentifier` construction do not.
+
+### The Linux regression harness — how to rebuild it
+
+Every change on this branch was gated on *"0 regressions against the previous commit"* measured
+by a small harness that **lives in the session scratchpad and dies with the session**. It is not
+in the repository, on purpose: it is Linux tooling for a Windows-authored suite, and §4 is
+explicit that its result is a **comparison instrument, never proof of correctness**. Rebuilding
+it takes minutes if you know what it has to do.
+
+Four parts:
+
+1. **`normalize.py`** — makes a *throwaway copy* of the repo runnable on Linux. Critically it is
+   a **fixed, enumerated list of replacements, not a blanket backslash rewrite**, so the same
+   transform applied to two revisions leaves the outcomes comparable; each replacement reports
+   its count, and one that matches nothing reports 0 rather than being silently skipped. It
+   fixes exactly: `$PSScriptRoot\..\Modules\...` → `/../modules/...` (separator **and** the
+   `Modules` vs. real `modules` casing) in `tests/`, the same for `config`, `Helpers` and the
+   relative `..\Deploy-TierModel.ps1` / `..\Audit-TierModel.ps1` forms, plus four
+   `Join-Path` literals in `modules/` and the two root scripts. Never run it on the working tree.
+2. **`run-suite.ps1`** — runs Pester **one test file at a time** and writes a flat per-test JSON
+   (`File`, `Path`, `Result`). One file at a time because a file that dies in `BeforeAll` must
+   not take the run with it: a crashed container has to be *recorded*, not fatal.
+   `tests/Invoke-AllTests.ps1` is deliberately not used — it emits no machine-readable result
+   and never dot-sources `tests/helpers/ADStubs.ps1` (on Windows the CI workflow loads the stubs
+   separately). It also sets `$env:TEMP`/`$env:TMP`, which are unset on Linux and which 14
+   `BeforeAll` blocks build paths from.
+3. **`regress.sh`** — `git archive HEAD` into one directory as the baseline, the working tree
+   into another as the head, normalize both, run both, write two JSONs.
+4. **`diff.py`** — compares the two JSONs keyed by `(File, Path)` and prints
+   `Passed → Failed` as regressions, plus new/disappeared tests. **Key it on the pair**, and be
+   aware that a handful of tests share a `Path` string, so a dict keyed that way collapses ~48
+   duplicates and its totals will not match Pester's own count — the regression list is still
+   correct, the totals are not.
+
+Expected output shape on this branch: **0 regressions**, and the head/base counts differ only by
+tests you added. Roughly 350 of ~2090 fail on Linux for platform reasons on *both* sides
+(§4, *Running the suite on Linux*).
 
 ---
 
