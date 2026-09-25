@@ -44,6 +44,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fixture where every English name lookup fails, proving no code path depends on the name.
 
 ### Fixed
+- **`Compare-TierModelDeploymentReport.ps1` normalised the domain SID but not the RID, and
+  reported 84 differences between two identical deployments.** Measured on the first live parity
+  run (2026-09-24, commit `ce528e4`, one localized and one English lab domain): both sides planned
+  719 actions, applied 689 with zero errors, converged on the second run and audited 433 checks
+  with zero drift — and the comparison still exited 1 with 31 `SidDiffers` and 53 `ValuesDiffer`.
+  Every one of them was noise. Active Directory allocates a RID from a pool that starts at 1000,
+  so a Tier Model group's RID records how many objects its domain had created before it, not
+  anything the configuration asserts; the two labs differed by exactly one object and every
+  locally allocated RID was off by one. 31 of 56 configured principals and 894 of 1791
+  `[Privilege Rights]` entries carry such a RID, which is the same failure class this script was
+  written to remove, one level deeper. A SID at or above the pool is now mapped back to its
+  configured name through the report's *own* `PrincipalResolution` table and compared by identity.
+  A RID below the pool keeps its number, because those are fixed by the protocol and a difference
+  there is a real defect; so does a locally allocated SID the report does not name, because it
+  cannot be compared by identity and must stay reportable — measured on both domains, there were
+  none, so that path is a guard rather than a routine. Principals compared by identity are
+  reported as `LocalRidNotCompared`: printed and carried in the result file, but deliberately
+  excluded from `DifferenceCount` and the exit code, so the exit code keeps meaning "these two
+  deployments differ". A `Resolved` mismatch between the two sides, previously invisible, now
+  surfaces as `ResolutionDiffers`. Result schema `1.0.0` → `1.1.0`. Verified against the two
+  captured lab reports: `No differences.`, exit 0, 31 compared by identity — and five adversarial
+  mutations of the same data (a built-in RID, a well-known SID, a class change, a changed
+  `Source`, an unmapped local SID, a foreign domain SID) are each still caught with exit 1.
 - **Three places instructed a comparison that cannot work.** The parity section of
   `docs/german-lab-runbook.md`, the description in `Test-TierModelLocalizedDeployment.ps1` and
   that script's closing console lines all said to diff the two reports' `PrivilegeRights`

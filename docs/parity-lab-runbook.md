@@ -89,6 +89,33 @@ pins each:
 | `S-1-5-32-*`, `S-1-1-0`, `S-1-5-10` | invariant already; no domain prefix to strip |
 | `NT SERVICE\*`, `IIS APPPOOL\*`, `CLIUSR` | machine-local `literalStrings`; no domain SID by construction, resolved by secedit on the target (rule 2.4) |
 
+### And normalising the domain SID is not enough either
+
+Below the domain SID sits a second, independent source of exactly the same kind of false
+difference, and it is the one that is easy to miss. Active Directory allocates a RID when an
+object is created, from a pool that starts at **1000**. A Tier Model group's RID therefore records
+how many objects its domain had created before it — not anything the configuration says:
+
+```
+<DOMAIN>-2602     Tier 0 Admins on one domain
+<DOMAIN>-2603     Tier 0 Admins on the other
+```
+
+The parity run of 2026-09-24 is what made this concrete. The two lab domains differed by exactly
+one object before the first Tier Model container was created, so **every** locally allocated RID
+was off by one, and the comparison reported **84 differences — 31 `SidDiffers` and 53
+`ValuesDiffer` — against two deployments that were identical**. 31 of the 56 configured principals
+and 894 of the 1791 `[Privilege Rights]` entries carry such a RID.
+
+A SID at or above the pool is therefore mapped back to the name the configuration gave it, through
+**the report's own `PrincipalResolution` table**, and compared by that name — which is what the
+configuration actually asserts. Two things keep their number on purpose:
+
+| Keeps its RID | Why |
+|---|---|
+| a RID **below** 1000 | fixed by the protocol — 500, 512, 516, 571 … — so a difference there is a real resolution defect |
+| a locally allocated SID the report does **not** name | it cannot be compared by identity, so it stays comparable by RID and is still reported. Measured on both lab domains: zero such SIDs. This is a guard, not a routine path |
+
 ### What is compared, and what is deliberately not
 
 | Compared | Not compared |
@@ -111,8 +138,10 @@ Anything else, by `Kind`:
 
 | Kind | What it means |
 |---|---|
-| `SidDiffers` | a configured principal resolved to a different RID or well-known SID. A real defect in resolution. |
+| `SidDiffers` | a configured principal resolved to a different **built-in** RID (below 1000), a different well-known SID, or changed class — built-in on one domain, locally created on the other. A real defect in resolution. It no longer fires for a locally allocated RID; see below. |
 | `SourceDiffers` | same SID, different route. One domain fell back — usually to a name lookup, which is what this project removed. Look at which side. |
+| `ResolutionDiffers` | the principal resolved on one domain and not on the other, with the same SID and the same source. Read the report's `Resolved` and `Error` fields for that entry. |
+| `LocalRidNotCompared` | **not a difference, and not counted.** The principal resolved to a domain-allocated RID (≥ 1000) on both sides, so it was compared by identity instead of by number — see §2. Expect one per Tier Model-owned group; on the measured lab pair, 31. The console prints the count. A number far from what you expect is worth a look; the entries themselves are in the result JSON under `LocalRidNotCompared`. |
 | `PrincipalMissingIn…` | a principal resolved on one domain and not the other. Expected **only** for forest-root groups read from a child domain and for optional groups such as `Allowed RODC Password Replication Group`; anything else is a defect. |
 | `ValuesDiffer` | a right carries different principals. If a raw `S-1-5-21-…` appears on one side, that is a **foreign** SID — go to the `Import-GPO` question in `CLAUDE.md` §6. |
 | `RightMissingIn…` | a privilege right exists in one deployment only. Usually means the two runs were not at the same commit or one deployment is incomplete. |

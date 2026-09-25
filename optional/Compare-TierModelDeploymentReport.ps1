@@ -33,7 +33,26 @@ param(
     is corrected alongside this script.
 
     So each report's OWN domain SID is replaced by the placeholder <DOMAIN> before anything is
-    compared, and what remains is compared. Three classes deliberately survive untouched:
+    compared, and what remains is compared.
+
+    NORMALISING THE DOMAIN SID ALONE IS NOT ENOUGH, AND THAT IS NOT OBVIOUS.
+    Below the domain SID sits a second, independent source of the same kind of false difference:
+    the RID. Active Directory allocates a RID when an object is created, from a pool that starts
+    at 1000, so a Tier Model group's RID records how many objects its domain had created before it
+    -- not anything the configuration says. The parity run of 2026-09-24 made that concrete: the
+    two lab domains differed by exactly one object, every locally created RID was off by one, and
+    this script reported 84 differences (31 principals, 53 rights) against two deployments that
+    were in fact identical. 31 of the 56 configured principals and 894 of the 1791 [Privilege
+    Rights] entries carry such a RID.
+
+    A SID at or above the RID pool is therefore mapped back to the name the configuration gave it,
+    through the report's OWN PrincipalResolution table, and compared by that name. A RID below the
+    pool keeps its number: those are fixed by the protocol (500, 512, 516, 571, ...) and a
+    difference there is a real resolution defect. So does a locally allocated SID the report does
+    not name -- it cannot be compared by identity, so it stays comparable by RID and is still
+    reported.
+
+    Three classes deliberately survive untouched:
 
       - a SID belonging to NEITHER domain, because a foreign SID reaching the settings is a
         finding, not noise -- it is what the open question about Import-GPO's <SecurityGroups>
@@ -113,6 +132,148 @@ function ConvertTo-DomainRelativeSid {
     return $Value
 }
 
+function Get-FirstAllocatedRid {
+    <#
+    .SYNOPSIS
+        The first RID Active Directory hands out from a domain's RID pool.
+
+    .DESCRIPTION
+        Everything below it is a well-known domain RID fixed by the protocol (500 Administrator,
+        512 Domain Admins, 516 Domain Controllers, 571 Allowed RODC Password Replication Group,
+        ...) and therefore comparable across domains. Everything at or above it was allocated when
+        the object was created, so it records how many objects the domain had created before - it
+        is NOT a property of the configuration.
+
+        This is a function and not a script-scope variable on purpose.
+        tests/Unit.ParityComparison.Tests.ps1 lifts FUNCTIONS out of this file's AST and
+        dot-sources them individually; a top-level assignment is never lifted, so the variable
+        would be $null under test. PowerShell coerces $null to 0 in a numeric comparison, so
+        "$rid -ge $null" is true for every RID - the built-in check would have failed open, in the
+        tests only, without a single error. Keep it callable.
+    #>
+    [CmdletBinding()]
+    [OutputType([int])]
+    param()
+
+    return 1000
+}
+
+function Get-DomainRelativeRid {
+    <#
+    .SYNOPSIS
+        Returns the RID when $Value is exactly "<DomainSid>-<rid>", otherwise $null.
+
+    .DESCRIPTION
+        The anchoring is the same as ConvertTo-DomainRelativeSid's and for the same reason: without
+        it, one domain's SID also matches a longer, different SID that happens to start with the
+        same digits. $null means "not a SID of this domain" - which covers well-known SIDs, foreign
+        domain SIDs and the machine-local literalStrings alike.
+    #>
+    [CmdletBinding()]
+    [OutputType([System.Nullable[int]])]
+    param(
+        [AllowNull()][AllowEmptyString()][string]$Value,
+        [AllowNull()][AllowEmptyString()][string]$DomainSid
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Value))     { return $null }
+    if ([string]::IsNullOrWhiteSpace($DomainSid)) { return $null }
+
+    $body = if ($Value.StartsWith('*')) { $Value.Substring(1) } else { $Value }
+
+    $pattern = '^{0}-(\d+)$' -f [regex]::Escape($DomainSid)
+    if ($body -match $pattern) { return [int]$matches[1] }
+    return $null
+}
+
+function Get-ReportPrincipalMap {
+    <#
+    .SYNOPSIS
+        Builds SID -> configured name from a report's own PrincipalResolution section.
+
+    .DESCRIPTION
+        This is what lets a locally allocated RID be compared by identity instead of by number.
+        Each report carries the table for its own domain, so the mapping is never shared between
+        the two sides. Absence of the section is tolerated exactly as Get-ReportDomainSid tolerates
+        a missing Environment: the caller then falls back to comparing the RID, which is the old
+        behaviour and still reports rather than hides.
+    #>
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param([Parameter(Mandatory)]$Report)
+
+    $map = @{}
+
+    $section = $Report.PSObject.Properties['PrincipalResolution']
+    if (-not $section) { return $map }
+    $entries = $section.Value.PSObject.Properties['Entries']
+    if (-not $entries) { return $map }
+
+    foreach ($entry in @($entries.Value)) {
+        if (-not $entry) { continue }
+        $sid = [string]$entry.Sid
+        if ([string]::IsNullOrWhiteSpace($sid)) { continue }
+        # First writer wins. Two configured names resolving to the same SID is legitimate (an alias
+        # and its canonical form), and either name identifies the same principal for comparison.
+        if (-not $map.ContainsKey($sid)) { $map[$sid] = [string]$entry.ConfiguredName }
+    }
+
+    return $map
+}
+
+function ConvertTo-ComparablePrincipal {
+    <#
+    .SYNOPSIS
+        Reduces a principal to the form in which the two domains can actually be compared.
+
+    .DESCRIPTION
+        Normalising the domain SID alone is not enough, and the parity run of 2026-09-24 is what
+        showed it: 31 of 56 configured principals and 894 of 1791 [Privilege Rights] entries carry
+        a RID the directory allocated at creation time. The two lab domains differed by exactly one
+        object before the first Tier Model container was created, so every one of those RIDs was
+        off by one and the comparison reported 84 differences where there were none.
+
+        A locally allocated RID is therefore mapped back to the name the configuration gave it -
+        which is the thing the configuration actually asserts. Three classes deliberately keep
+        their number:
+
+          - a RID below the RID pool (see Get-FirstAllocatedRid), because those are fixed by
+            the protocol and a difference there is a real resolution defect;
+          - a locally allocated SID the report's own PrincipalResolution does not know, because a
+            SID in the settings that the configuration never named cannot be compared by identity -
+            it stays comparable by RID and will still be reported. Measured on both lab domains:
+            zero such SIDs. This is a guard, not a routine path;
+          - everything that is not this domain's SID at all - well-known SIDs, the machine-local
+            literalStrings, and above all a FOREIGN domain SID, which is the finding the whole
+            comparison exists to surface.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [AllowNull()][AllowEmptyString()][string]$Value,
+        [AllowNull()][AllowEmptyString()][string]$DomainSid,
+        [AllowNull()][hashtable]$PrincipalMap
+    )
+
+    $rid = Get-DomainRelativeRid -Value $Value -DomainSid $DomainSid
+    if ($null -eq $rid -or $rid -lt (Get-FirstAllocatedRid)) {
+        return (ConvertTo-DomainRelativeSid -Value $Value -DomainSid $DomainSid)
+    }
+
+    $prefix = ''
+    $body   = $Value
+    if ($body.StartsWith('*')) {
+        $prefix = '*'
+        $body   = $body.Substring(1)
+    }
+
+    if ($null -ne $PrincipalMap -and $PrincipalMap.ContainsKey($body)) {
+        return '{0}<PRINCIPAL:{1}>' -f $prefix, $PrincipalMap[$body]
+    }
+
+    return (ConvertTo-DomainRelativeSid -Value $Value -DomainSid $DomainSid)
+}
+
 function Get-ReportDomainSid {
     <#
     .SYNOPSIS
@@ -160,10 +321,15 @@ function Compare-PrivilegeRightsSection {
     $referenceGpos  = & $index $Reference
     $differenceGpos = & $index $Difference
 
+    # Each report's own table, never shared: a SID is mapped to a name only by the domain it
+    # belongs to.
+    $referencePrincipals  = Get-ReportPrincipalMap -Report $Reference
+    $differencePrincipals = Get-ReportPrincipalMap -Report $Difference
+
     $normaliseSet = {
-        param($Values, $DomainSid)
+        param($Values, $DomainSid, $PrincipalMap)
         $normalised = foreach ($value in @($Values)) {
-            ConvertTo-DomainRelativeSid -Value ([string]$value) -DomainSid $DomainSid
+            ConvertTo-ComparablePrincipal -Value ([string]$value) -DomainSid $DomainSid -PrincipalMap $PrincipalMap
         }
         # Sorted and joined so the comparison is order-independent: secedit's ordering is not a
         # property of the configuration. Case-insensitive because SIDs and the machine-local
@@ -195,8 +361,8 @@ function Compare-PrivilegeRightsSection {
 
         foreach ($right in ($referenceRights.Keys + $differenceRights.Keys | Sort-Object -Unique)) {
 
-            $referenceSet  = if ($referenceRights.ContainsKey($right))  { & $normaliseSet $referenceRights[$right]  $referenceDomain }  else { $null }
-            $differenceSet = if ($differenceRights.ContainsKey($right)) { & $normaliseSet $differenceRights[$right] $differenceDomain } else { $null }
+            $referenceSet  = if ($referenceRights.ContainsKey($right))  { & $normaliseSet $referenceRights[$right]  $referenceDomain  $referencePrincipals }  else { $null }
+            $differenceSet = if ($differenceRights.ContainsKey($right)) { & $normaliseSet $differenceRights[$right] $differenceDomain $differencePrincipals } else { $null }
 
             if ($referenceSet -ceq $differenceSet) { continue }
             if ($null -ne $referenceSet -and $null -ne $differenceSet -and
@@ -274,14 +440,58 @@ function Compare-PrincipalResolutionSection {
         $referenceSid  = ConvertTo-DomainRelativeSid -Value ([string]$referenceEntry.Sid)  -DomainSid $referenceDomain
         $differenceSid = ConvertTo-DomainRelativeSid -Value ([string]$differenceEntry.Sid) -DomainSid $differenceDomain
 
-        $sidDiffers    = -not [string]::Equals($referenceSid, $differenceSid, [StringComparison]::OrdinalIgnoreCase)
+        $referenceRid  = Get-DomainRelativeRid -Value ([string]$referenceEntry.Sid)  -DomainSid $referenceDomain
+        $differenceRid = Get-DomainRelativeRid -Value ([string]$differenceEntry.Sid) -DomainSid $differenceDomain
+
+        # Both sides resolved to a principal their own domain allocated. The entries are already
+        # joined on the configured name, so the RID carries no information the comparison could
+        # use: it says how many objects the domain had created before, not what the configuration
+        # asserts. Compared by number it is guaranteed noise the moment the two domains were not
+        # built in lockstep - on the 2026-09-24 lab pair every one of these was off by exactly one.
+        # The Source comparison below still runs, and it is the one that catches a domain falling
+        # back to a name lookup.
+        $firstAllocatedRid = Get-FirstAllocatedRid
+        $bothLocallyAllocated =
+            $null -ne $referenceRid  -and $referenceRid  -ge $firstAllocatedRid -and
+            $null -ne $differenceRid -and $differenceRid -ge $firstAllocatedRid
+
+        $sidDiffers = (-not $bothLocallyAllocated) -and
+            -not [string]::Equals($referenceSid, $differenceSid, [StringComparison]::OrdinalIgnoreCase)
+
         $sourceDiffers = -not [string]::Equals([string]$referenceEntry.Source, [string]$differenceEntry.Source, [StringComparison]::OrdinalIgnoreCase)
 
-        if (-not $sidDiffers -and -not $sourceDiffers) { continue }
+        # A principal that resolved on one domain and not on the other was invisible before: the
+        # SIDs could still match while one side carried Resolved = false with an error. Compared
+        # only when BOTH entries carry the field - a report written by an older version of
+        # Test-TierModelLocalizedDeployment would otherwise differ from a current one on schema
+        # rather than on substance.
+        $resolvedDiffers =
+            $null -ne $referenceEntry.PSObject.Properties['Resolved'] -and
+            $null -ne $differenceEntry.PSObject.Properties['Resolved'] -and
+            ([bool]$referenceEntry.Resolved) -ne ([bool]$differenceEntry.Resolved)
+
+        if ($bothLocallyAllocated -and -not $sourceDiffers -and -not $resolvedDiffers) {
+            # Reclassified in the open, never swallowed: this is reported alongside the result and
+            # counted, but it does not make the two deployments differ.
+            [PSCustomObject]@{
+                Section          = 'PrincipalResolution'
+                Kind             = 'LocalRidNotCompared'
+                ConfiguredName   = $name
+                ReferenceSid     = $referenceSid
+                DifferenceSid    = $differenceSid
+                ReferenceSource  = [string]$referenceEntry.Source
+                DifferenceSource = [string]$differenceEntry.Source
+            }
+            continue
+        }
+
+        if (-not $sidDiffers -and -not $sourceDiffers -and -not $resolvedDiffers) { continue }
 
         [PSCustomObject]@{
             Section          = 'PrincipalResolution'
-            Kind             = if ($sidDiffers) { 'SidDiffers' } else { 'SourceDiffers' }
+            Kind             = if ($sidDiffers) { 'SidDiffers' }
+                               elseif ($sourceDiffers) { 'SourceDiffers' }
+                               else { 'ResolutionDiffers' }
             ConfiguredName   = $name
             ReferenceSid     = $referenceSid
             DifferenceSid    = $differenceSid
@@ -319,9 +529,16 @@ if ($referenceLanguage -eq $differenceLanguage) {
     Write-Warning ("Both reports report directory language '{0}'. This is not the English/localized parity proof." -f $referenceLanguage)
 }
 
-$differences = @()
-$differences += @(Compare-PrincipalResolutionSection -Reference $referenceReport -Difference $differenceReport)
-$differences += @(Compare-PrivilegeRightsSection    -Reference $referenceReport -Difference $differenceReport)
+$records = @()
+$records += @(Compare-PrincipalResolutionSection -Reference $referenceReport -Difference $differenceReport)
+$records += @(Compare-PrivilegeRightsSection    -Reference $referenceReport -Difference $differenceReport)
+
+# LocalRidNotCompared is an observation, not a difference: the two domains allocated their own RIDs,
+# which they always do. It is kept in the result file and printed, so the narrowing of the
+# comparison is visible rather than silent - but it must not reach the count or the exit code, or
+# the exit code would stop meaning "these two deployments differ".
+$notCompared = @($records | Where-Object { $_.Kind -eq 'LocalRidNotCompared' })
+$differences = @($records | Where-Object { $_.Kind -ne 'LocalRidNotCompared' })
 
 $principalCount = @($differences | Where-Object { $_.Section -eq 'PrincipalResolution' }).Count
 $rightsCount    = @($differences | Where-Object { $_.Section -eq 'PrivilegeRights' }).Count
@@ -329,6 +546,9 @@ $rightsCount    = @($differences | Where-Object { $_.Section -eq 'PrivilegeRight
 Write-Host ""
 Write-Host ("  PrincipalResolution differences: {0}" -f $principalCount)
 Write-Host ("  PrivilegeRights differences    : {0}" -f $rightsCount)
+if ($notCompared.Count -gt 0) {
+    Write-Host ("  compared by identity, not by RID: {0} principal(s) - their RIDs are domain-allocated" -f $notCompared.Count)
+}
 
 foreach ($difference in $differences) {
     Write-Host ("    [{0}] {1}" -f $difference.Kind, ($difference | ConvertTo-Json -Compress)) -ForegroundColor Yellow
@@ -340,12 +560,13 @@ if (-not $OutputPath) {
 }
 
 [ordered]@{
-    SchemaVersion = '1.0.0'
+    SchemaVersion = '1.1.0'
     GeneratedUtc  = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ', [System.Globalization.CultureInfo]::InvariantCulture)
     Reference     = [ordered]@{ Path = $ReferencePath;  DirectoryLanguage = $referenceLanguage;  DomainSid = (Get-ReportDomainSid -Report $referenceReport) }
     Difference    = [ordered]@{ Path = $DifferencePath; DirectoryLanguage = $differenceLanguage; DomainSid = (Get-ReportDomainSid -Report $differenceReport) }
-    DifferenceCount = $differences.Count
-    Differences     = $differences
+    DifferenceCount     = $differences.Count
+    Differences         = $differences
+    LocalRidNotCompared = $notCompared
 } | ConvertTo-Json -Depth 8 | Set-Content -Path $OutputPath -Encoding UTF8
 
 Write-Host ""
