@@ -51,7 +51,10 @@ Describe "Compare-TierModelDeploymentReport — SID normalisation" -Tag 'Unit', 
             $script:ScriptPath, [ref]$null, [ref]$null)
 
         $script:LiftedNames = @()
-        foreach ($name in @('ConvertTo-DomainRelativeSid', 'Get-ReportDomainSid', 'Compare-PrivilegeRightsSection', 'Compare-PrincipalResolutionSection')) {
+        foreach ($name in @(
+            'ConvertTo-DomainRelativeSid', 'Get-ReportDomainSid', 'Compare-PrivilegeRightsSection', 'Compare-PrincipalResolutionSection',
+            'Get-FirstAllocatedRid', 'Get-DomainRelativeRid', 'Get-ReportPrincipalMap', 'ConvertTo-ComparablePrincipal'
+        )) {
             $fn = $script:ScriptAst.FindAll({
                 param($node)
                 $node -is [System.Management.Automation.Language.FunctionDefinitionAst]
@@ -68,9 +71,9 @@ Describe "Compare-TierModelDeploymentReport — SID normalisation" -Tag 'Unit', 
         $script:EnSid = 'S-1-5-21-1004336348-1177238915-682003330'
     }
 
-    It "lifts all four functions out of the script" {
+    It "lifts all eight functions out of the script" {
         # Anti-vacuity: without this, every case below passes by calling nothing.
-        @($script:LiftedNames).Count | Should -Be 4
+        @($script:LiftedNames).Count | Should -Be 8
     }
 
     It "replaces the report's own domain SID with a placeholder and keeps the RID" {
@@ -115,6 +118,45 @@ Describe "Compare-TierModelDeploymentReport — SID normalisation" -Tag 'Unit', 
         ConvertTo-DomainRelativeSid -Value "*$($script:EnSid)-512" -DomainSid $script:DeSid |
             Should -Be "*$($script:EnSid)-512"
     }
+
+    It "returns the first allocated RID as exactly 1000" {
+        # Not a magic number sprinkled at call sites: everything below it is a well-known domain
+        # RID fixed by the protocol, everything at or above it was handed out at object-creation
+        # time and records the domain's own history, not the configuration.
+        Get-FirstAllocatedRid | Should -Be 1000
+    }
+
+    It "extracts the RID from a value that is exactly <DomainSid>-<rid>" {
+        Get-DomainRelativeRid -Value "$($script:DeSid)-2602" -DomainSid $script:DeSid | Should -Be 2602
+    }
+
+    It "tolerates secedit's leading asterisk when extracting the RID" {
+        Get-DomainRelativeRid -Value "*$($script:DeSid)-2602" -DomainSid $script:DeSid | Should -Be 2602
+    }
+
+    It "returns null for a SID belonging to a different domain" {
+        Get-DomainRelativeRid -Value "*$($script:EnSid)-2602" -DomainSid $script:DeSid | Should -BeNullOrEmpty
+    }
+
+    It "returns null for a non-domain well-known SID" {
+        # S-1-5-32-544 has no domain-sid prefix at all; it must not be mistaken for a local RID
+        # just because its tail looks like one.
+        Get-DomainRelativeRid -Value '*S-1-5-32-544' -DomainSid $script:DeSid | Should -BeNullOrEmpty
+    }
+
+    It "maps a mapped locally allocated SID to its configured name, keeping the asterisk" {
+        $map = @{ "$($script:DeSid)-2602" = 'Tier0PAWDevices' }
+        ConvertTo-ComparablePrincipal -Value "*$($script:DeSid)-2602" -DomainSid $script:DeSid -PrincipalMap $map |
+            Should -Be '*<PRINCIPAL:Tier0PAWDevices>'
+    }
+
+    It "falls back to the domain-relative SID when the local RID is not in the map" {
+        # The guard path, not the routine one: a local SID the report's own PrincipalResolution
+        # never named cannot be compared by identity, so it has to stay comparable by number
+        # instead of silently vanishing from the comparison.
+        ConvertTo-ComparablePrincipal -Value "*$($script:DeSid)-2602" -DomainSid $script:DeSid -PrincipalMap @{} |
+            Should -Be '*<DOMAIN>-2602'
+    }
 }
 
 Describe "Compare-TierModelDeploymentReport — [Privilege Rights] parity" -Tag 'Unit', 'Localization', 'Parity' {
@@ -123,13 +165,21 @@ Describe "Compare-TierModelDeploymentReport — [Privilege Rights] parity" -Tag 
         $script:ScriptPath = Join-Path $PSScriptRoot '..' 'optional' 'Compare-TierModelDeploymentReport.ps1'
         $script:ScriptAst  = [System.Management.Automation.Language.Parser]::ParseFile(
             $script:ScriptPath, [ref]$null, [ref]$null)
-        foreach ($name in @('ConvertTo-DomainRelativeSid', 'Get-ReportDomainSid', 'Compare-PrivilegeRightsSection')) {
+        foreach ($name in @(
+            'ConvertTo-DomainRelativeSid', 'Get-ReportDomainSid', 'Compare-PrivilegeRightsSection',
+            'Get-ReportPrincipalMap', 'ConvertTo-ComparablePrincipal', 'Get-DomainRelativeRid', 'Get-FirstAllocatedRid'
+        )) {
             $fn = $script:ScriptAst.FindAll({
                 param($node)
                 $node -is [System.Management.Automation.Language.FunctionDefinitionAst]
             }, $true) | Where-Object { $_.Name -eq $name } | Select-Object -First 1
             if ($fn) { . ([scriptblock]::Create($fn.Extent.Text)) }
         }
+
+        # Named for the local-RID-tolerance Context below; the pre-existing fixtures keep their
+        # own inline literals so this addition does not touch what already passed.
+        $script:DeSid = 'S-1-5-21-2230522700-2543936044-3532250090'
+        $script:EnSid = 'S-1-5-21-1004336348-1177238915-682003330'
 
         # Two reports for the same configuration deployed to two domains. Different domain SIDs,
         # different GPO GUIDs (they are created per domain), identical RIDs.
@@ -202,6 +252,79 @@ Describe "Compare-TierModelDeploymentReport — [Privilege Rights] parity" -Tag 
         $result = Compare-PrivilegeRightsSection -Reference $script:ReferenceReport -Difference $script:DifferenceReport
         @($result | Where-Object { $_.Right -eq 'SeDenyNetworkLogonRight' }).Count | Should -Be 1
     }
+
+    Context "local-RID tolerance" {
+
+        BeforeAll {
+            # A Tier Model group's RID is allocated when the object is created, so the same
+            # configuration deployed to two domains gets two different numbers for the same
+            # object -- reproducing the shape of the 2026-09-24 lab pair rather than inventing an
+            # unrelated example. Each report carries its OWN PrincipalResolution table, which is
+            # what lets a locally allocated RID be compared by identity instead of by number.
+            $script:MakeRightsReport = {
+                param($DomainSid, $GpoId, $Rights, $PrincipalEntries = @())
+                [PSCustomObject]@{
+                    Environment         = [PSCustomObject]@{ DomainSid = $DomainSid }
+                    PrincipalResolution = [PSCustomObject]@{ Entries = $PrincipalEntries }
+                    PrivilegeRights     = @(
+                        [PSCustomObject]@{
+                            GpoDisplayName = 'Tier 0 - PAWs'
+                            GpoId          = $GpoId
+                            Rights         = $Rights
+                        }
+                    )
+                }
+            }
+        }
+
+        It "reports no difference when a right's principal differs only by its allocated RID" {
+            $reference = & $script:MakeRightsReport $script:EnSid 'aaaaaaaa-0000-0000-0000-000000000001' `
+                ([PSCustomObject]@{ SeInteractiveLogonRight = @("*$($script:EnSid)-2602") }) `
+                @([PSCustomObject]@{ ConfiguredName = 'Tier0PAWDevices'; Sid = "$($script:EnSid)-2602" })
+            $difference = & $script:MakeRightsReport $script:DeSid 'bbbbbbbb-0000-0000-0000-000000000002' `
+                ([PSCustomObject]@{ SeInteractiveLogonRight = @("*$($script:DeSid)-2603") }) `
+                @([PSCustomObject]@{ ConfiguredName = 'Tier0PAWDevices'; Sid = "$($script:DeSid)-2603" })
+
+            $result = Compare-PrivilegeRightsSection -Reference $reference -Difference $difference
+            @($result).Count | Should -Be 0
+        }
+
+        It "still reports a local SID absent from the report's own PrincipalResolution" {
+            # Guard case, not the routine path (see ConvertTo-ComparablePrincipal's comment): a
+            # local RID the configuration never named cannot be compared by identity, so it must
+            # fall back to the RID and keep being reported rather than disappear.
+            $reference = & $script:MakeRightsReport $script:EnSid 'aaaaaaaa-0000-0000-0000-000000000001' `
+                ([PSCustomObject]@{ SeInteractiveLogonRight = @("*$($script:EnSid)-2602") }) @()
+            $difference = & $script:MakeRightsReport $script:DeSid 'bbbbbbbb-0000-0000-0000-000000000002' `
+                ([PSCustomObject]@{ SeInteractiveLogonRight = @("*$($script:DeSid)-2603") }) @()
+
+            $result = Compare-PrivilegeRightsSection -Reference $reference -Difference $difference
+            @($result | Where-Object { $_.Right -eq 'SeInteractiveLogonRight' }).Count | Should -Be 1
+        }
+
+        It "reports a foreign domain SID verbatim, unaffected by the principal map" {
+            $reference = & $script:MakeRightsReport $script:EnSid 'aaaaaaaa-0000-0000-0000-000000000001' `
+                ([PSCustomObject]@{ SeInteractiveLogonRight = @('*S-1-5-21-9999999999-8888888888-7777777777-2602') }) `
+                @([PSCustomObject]@{ ConfiguredName = 'Tier0PAWDevices'; Sid = "$($script:EnSid)-2602" })
+            $difference = & $script:MakeRightsReport $script:DeSid 'bbbbbbbb-0000-0000-0000-000000000002' `
+                ([PSCustomObject]@{ SeInteractiveLogonRight = @("*$($script:DeSid)-2603") }) `
+                @([PSCustomObject]@{ ConfiguredName = 'Tier0PAWDevices'; Sid = "$($script:DeSid)-2603" })
+
+            $result = Compare-PrivilegeRightsSection -Reference $reference -Difference $difference
+            @($result | Where-Object { $_.Right -eq 'SeInteractiveLogonRight' }).Count | Should -Be 1
+            $result[0].ReferenceValue | Should -Match '9999999999-8888888888-7777777777-2602'
+        }
+
+        It "leaves a literalStrings machine-local principal untouched when identical on both sides" {
+            $reference = & $script:MakeRightsReport $script:EnSid 'aaaaaaaa-0000-0000-0000-000000000001' `
+                ([PSCustomObject]@{ SeServiceLogonRight = @('NT SERVICE\MSSQLSERVER') }) @()
+            $difference = & $script:MakeRightsReport $script:DeSid 'bbbbbbbb-0000-0000-0000-000000000002' `
+                ([PSCustomObject]@{ SeServiceLogonRight = @('NT SERVICE\MSSQLSERVER') }) @()
+
+            $result = Compare-PrivilegeRightsSection -Reference $reference -Difference $difference
+            @($result).Count | Should -Be 0
+        }
+    }
 }
 
 Describe "Compare-TierModelDeploymentReport — principal resolution parity" -Tag 'Unit', 'Localization', 'Parity' {
@@ -210,7 +333,10 @@ Describe "Compare-TierModelDeploymentReport — principal resolution parity" -Ta
         $script:ScriptPath = Join-Path $PSScriptRoot '..' 'optional' 'Compare-TierModelDeploymentReport.ps1'
         $script:ScriptAst  = [System.Management.Automation.Language.Parser]::ParseFile(
             $script:ScriptPath, [ref]$null, [ref]$null)
-        foreach ($name in @('ConvertTo-DomainRelativeSid', 'Get-ReportDomainSid', 'Compare-PrincipalResolutionSection')) {
+        foreach ($name in @(
+            'ConvertTo-DomainRelativeSid', 'Get-ReportDomainSid', 'Compare-PrincipalResolutionSection',
+            'Get-DomainRelativeRid', 'Get-FirstAllocatedRid'
+        )) {
             $fn = $script:ScriptAst.FindAll({
                 param($node)
                 $node -is [System.Management.Automation.Language.FunctionDefinitionAst]
@@ -225,6 +351,11 @@ Describe "Compare-TierModelDeploymentReport — principal resolution parity" -Ta
                 PrincipalResolution = [PSCustomObject]@{ Entries = $Entries }
             }
         }
+
+        # Defined locally rather than relying on Describe 1's BeforeAll: each Describe in this
+        # file builds its own fixtures from scratch.
+        $script:DeSid = 'S-1-5-21-2230522700-2543936044-3532250090'
+        $script:EnSid = 'S-1-5-21-1004336348-1177238915-682003330'
     }
 
     It "reports no difference when the same name resolves to the same RID on both domains" {
@@ -294,5 +425,103 @@ Describe "Compare-TierModelDeploymentReport — principal resolution parity" -Ta
                                Sid = $null; Source = $null; DirectoryName = $null; Resolved = $false }
         )
         @(Compare-PrincipalResolutionSection -Reference $en -Difference $de).Count | Should -Be 1
+    }
+
+    It "does not flag a constant local-RID offset as SidDiffers, and counts it as LocalRidNotCompared" {
+        # NOTE: this looks like it should report differences -- every locally allocated RID below
+        # differs by exactly one between the two sides -- but a RID at or above the RID pool
+        # records how many objects its OWN domain had created before the Tier Model group, not
+        # anything the configuration says (Get-FirstAllocatedRid's comment; the 2026-09-24 lab
+        # pair differed this way on every locally created object and it was not a defect). Do not
+        # "fix" this back to expecting SidDiffers -- Domain Admins (RID 512, below the pool) is the
+        # control here and is correctly excluded from both counts because it does not differ at all.
+        $en = & $script:MakeReport $script:EnSid @(
+            [PSCustomObject]@{ ConfiguredName = 'Tier0PAWDevices'; Sid = "$($script:EnSid)-2602"
+                               Source = 'CanonicalDomainRid'; DirectoryName = 'Tier0PAWDevices'; Resolved = $true }
+            [PSCustomObject]@{ ConfiguredName = 'Tier0ServiceAccountOperators'; Sid = "$($script:EnSid)-2650"
+                               Source = 'CanonicalDomainRid'; DirectoryName = 'Tier0ServiceAccountOperators'; Resolved = $true }
+            [PSCustomObject]@{ ConfiguredName = 'Domain Admins'; Sid = "$($script:EnSid)-512"
+                               Source = 'CanonicalDomainRid'; DirectoryName = 'Domain Admins'; Resolved = $true }
+        )
+        $de = & $script:MakeReport $script:DeSid @(
+            [PSCustomObject]@{ ConfiguredName = 'Tier0PAWDevices'; Sid = "$($script:DeSid)-2603"
+                               Source = 'CanonicalDomainRid'; DirectoryName = 'Tier0PAWDevices'; Resolved = $true }
+            [PSCustomObject]@{ ConfiguredName = 'Tier0ServiceAccountOperators'; Sid = "$($script:DeSid)-2651"
+                               Source = 'CanonicalDomainRid'; DirectoryName = 'Tier0ServiceAccountOperators'; Resolved = $true }
+            [PSCustomObject]@{ ConfiguredName = 'Domain Admins'; Sid = "$($script:DeSid)-512"
+                               Source = 'CanonicalDomainRid'; DirectoryName = 'Domänen-Admins'; Resolved = $true }
+        )
+        $result = Compare-PrincipalResolutionSection -Reference $en -Difference $de
+        @($result).Count                                                  | Should -Be 2
+        @($result | Where-Object { $_.Kind -eq 'SidDiffers' }).Count           | Should -Be 0
+        @($result | Where-Object { $_.Kind -eq 'LocalRidNotCompared' }).Count  | Should -Be 2
+    }
+
+    It "still reports a differing built-in RID as SidDiffers" {
+        $en = & $script:MakeReport $script:EnSid @(
+            [PSCustomObject]@{ ConfiguredName = 'Domain Admins'; Sid = "$($script:EnSid)-512"
+                               Source = 'CanonicalDomainRid'; DirectoryName = 'Domain Admins'; Resolved = $true }
+        )
+        $de = & $script:MakeReport $script:DeSid @(
+            [PSCustomObject]@{ ConfiguredName = 'Domain Admins'; Sid = "$($script:DeSid)-513"
+                               Source = 'CanonicalDomainRid'; DirectoryName = 'Domänen-Admins'; Resolved = $true }
+        )
+        $result = Compare-PrincipalResolutionSection -Reference $en -Difference $de
+        @($result | Where-Object { $_.Kind -eq 'SidDiffers' }).Count | Should -Be 1
+    }
+
+    It "still reports a differing non-domain well-known SID as SidDiffers" {
+        $en = & $script:MakeReport $script:EnSid @(
+            [PSCustomObject]@{ ConfiguredName = 'Print Operators'; Sid = 'S-1-5-32-544'
+                               Source = 'WellKnown'; DirectoryName = 'Administrators'; Resolved = $true }
+        )
+        $de = & $script:MakeReport $script:DeSid @(
+            [PSCustomObject]@{ ConfiguredName = 'Print Operators'; Sid = 'S-1-5-32-545'
+                               Source = 'WellKnown'; DirectoryName = 'Benutzer'; Resolved = $true }
+        )
+        $result = Compare-PrincipalResolutionSection -Reference $en -Difference $de
+        @($result | Where-Object { $_.Kind -eq 'SidDiffers' }).Count | Should -Be 1
+    }
+
+    It "reports SidDiffers, not LocalRidNotCompared, when one side is built-in and the other is locally allocated" {
+        # The tolerance requires BOTH sides to be locally allocated. A class change like this one
+        # is a genuine resolution defect and must never be swallowed by it.
+        $en = & $script:MakeReport $script:EnSid @(
+            [PSCustomObject]@{ ConfiguredName = 'Domain Admins'; Sid = "$($script:EnSid)-512"
+                               Source = 'CanonicalDomainRid'; DirectoryName = 'Domain Admins'; Resolved = $true }
+        )
+        $de = & $script:MakeReport $script:DeSid @(
+            [PSCustomObject]@{ ConfiguredName = 'Domain Admins'; Sid = "$($script:DeSid)-2602"
+                               Source = 'CanonicalDomainRid'; DirectoryName = 'Domänen-Admins'; Resolved = $true }
+        )
+        $result = Compare-PrincipalResolutionSection -Reference $en -Difference $de
+        @($result | Where-Object { $_.Kind -eq 'SidDiffers' }).Count          | Should -Be 1
+        @($result | Where-Object { $_.Kind -eq 'LocalRidNotCompared' }).Count | Should -Be 0
+    }
+
+    It "reports SourceDiffers even when both RIDs are locally allocated" {
+        $en = & $script:MakeReport $script:EnSid @(
+            [PSCustomObject]@{ ConfiguredName = 'Tier0PAWDevices'; Sid = "$($script:EnSid)-2602"
+                               Source = 'CanonicalDomainRid'; DirectoryName = 'Tier0PAWDevices'; Resolved = $true }
+        )
+        $de = & $script:MakeReport $script:EnSid @(
+            [PSCustomObject]@{ ConfiguredName = 'Tier0PAWDevices'; Sid = "$($script:EnSid)-2602"
+                               Source = 'ADGroup'; DirectoryName = 'Tier0PAWDevices'; Resolved = $true }
+        )
+        $result = Compare-PrincipalResolutionSection -Reference $en -Difference $de
+        @($result | Where-Object { $_.Kind -eq 'SourceDiffers' }).Count | Should -Be 1
+    }
+
+    It "reports ResolutionDiffers when Resolved differs but SID and Source agree" {
+        $en = & $script:MakeReport $script:EnSid @(
+            [PSCustomObject]@{ ConfiguredName = 'Allowed RODC Password Replication Group'; Sid = "$($script:EnSid)-571"
+                               Source = 'CanonicalDomainRid'; DirectoryName = 'Allowed RODC Password Replication Group'; Resolved = $true }
+        )
+        $de = & $script:MakeReport $script:EnSid @(
+            [PSCustomObject]@{ ConfiguredName = 'Allowed RODC Password Replication Group'; Sid = "$($script:EnSid)-571"
+                               Source = 'CanonicalDomainRid'; DirectoryName = 'Allowed RODC Password Replication Group'; Resolved = $false }
+        )
+        $result = Compare-PrincipalResolutionSection -Reference $en -Difference $de
+        @($result | Where-Object { $_.Kind -eq 'ResolutionDiffers' }).Count | Should -Be 1
     }
 }
