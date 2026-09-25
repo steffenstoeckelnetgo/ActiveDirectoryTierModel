@@ -8,6 +8,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Verified
+- **Principal resolution is asserted against the real configuration, 2026-09-25, commit
+  `e057e62`.** The lab report's `Total: 56, Unresolved: 0` was one measurement, against one
+  directory, on one day. `tests/Unit.PrincipalCompleteness.Tests.ps1` makes it a standing
+  guarantee and asserts both halves: every principal the **real** `config/` names resolves through
+  a defined path — the canonical RID table, the well-known SID table or the RID 500 path, never a
+  name lookup it was not meant to take — and an English and a localized directory produce
+  **identical SID sets**, at the resolver and in the generated `[Privilege Rights]`. Measured on
+  the real configuration and asserted as exact integers: 62 referenced principals, 58 names for
+  the 29 groups the configuration creates, 33 `literalStrings`, 12 `identityreference` values,
+  98 keys carrying strings. Of the 27 references the configuration does not create, all 27 are
+  genuine built-ins — 13 canonical RID, 11 well-known, `Administrator` via RID 500, and
+  `DnsAdmins` / `DnsUpdateProxy` on the name path by design. Three guards were each proven red by
+  injecting the defect into a **copy** of `config/`: an undeclared principal, a built-in under an
+  undeclared configuration key, and a built-in in `identityreference` — the last being the one
+  path in the product that is language-*dependent* by construction
+  (`New-TierModelOuAcl.ps1:82-83` builds an `NTAccount` and translates it), safe only because
+  every value there is a Tier Model group the configuration itself names. **Tests only — no
+  product code and no configuration changed.** Accepted at **86 of 86** on the English lab host;
+  the file has no host-language dependency by construction, which is what it exists to make
+  checkable, and a German run would turn that from an argument into a measurement. **83 of the 86
+  run on Linux**, so CI can carry them — the first localization evidence in this repository that
+  does not need Windows. One finding this work produced rather than closed: the walker in
+  `optional/Test-TierModelLocalizedDeployment.ps1` knows seven principal-carrying keys where the
+  configuration uses eleven, so its inventory covers 56 of 62; its own concern and its own change.
 - **The 31 ACL tests execute on a German host, 2026-09-25, commit `33e4e11`.** They carried
   hard-coded principal names (`BUILTIN\Administrators`, `BUILTIN\Users`, `Everyone`) that German
   Windows cannot translate, so `NTAccount(...).Translate()` threw and the code under test took a

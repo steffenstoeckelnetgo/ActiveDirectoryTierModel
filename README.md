@@ -56,7 +56,7 @@ against a German Active Directory**, 2026-09-16, commit `5ebe784`.
 | **Automated tests** | **2,056 passing of 2,088** | German Windows 11 / PowerShell 7.6.6, Pester 5.9.0, 2026-09-16 |
 | **Command coverage** | **85.73%** (14,742 / 17,195) — clears the 80% CI gate | German lab host, `pwsh -NonInteractive`, 2026-09-17 |
 | **Manual integration tests** | 384, 100% pass | `tests/Manual.Integration.Tests.xlsx` |
-| **Test files** | 36 Pester files (29 unit, 7 integration) + 1 Excel workbook | counted on `main` |
+| **Test files** | 37 Pester files (30 unit, 7 integration) + 1 Excel workbook | counted on `main`, 2026-09-25 |
 | **Exported functions** | 80 files in `modules/TierModel/public/` + 3 defined inline in `TierModel.psm1` = **83** | counted on `main` |
 
 **About the 32 failures — 31 are fixed, 1 stays.** They were host-language artefacts in the **test

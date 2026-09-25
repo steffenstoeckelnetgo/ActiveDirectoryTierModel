@@ -59,18 +59,22 @@ reproduced every one of these numbers on 2026-09-24.
 | Audit | `TotalChecked: 433, Drift 0, Errors 0` — 100 % |
 | Localization report | 56 principals, 0 unresolved, 42 of them carrying a German directory name; **`No problems found.`** |
 
-**What is still open.** The code is merged, the three CI gates are measured (coverage included,
-§6 item 4) and parity is proven. What is *not* yet fully established is the standard the
-repository owner set on 2026-09-17:
+**Where the standard stands.** The code is merged, the three CI gates are measured (coverage
+included, §6 item 4) and parity is proven. The standard the repository owner set on 2026-09-17 —
 **the product must be demonstrably correct on a German Active Directory, at every change, not once
-by observation.** The lab cycle meets it for one domain. The suite met none of it for ACLs until
-2026-09-25, when the 31 ACL tests that could not execute on a German host were brought onto
-host-resolved principal names and measured green there (§6 *Start here* item 1, merged as
-`33e4e11`). What is still missing is the *resolution* half — no test asserts that every principal
-the real `config/` names resolves by a defined path, or that German and English fixtures produce
-identical SID sets; that is §6 *Start here* item 2, and it is the last thing between here and a
-tag. **Do not tag a release until that list is closed** — the repository carries no tags yet, so
-the first one should mean something.
+by observation** — was met by the lab cycle for one domain but not by the suite. Both halves of
+that gap closed on 2026-09-25:
+
+| Half | Closed by |
+|---|---|
+| **ACL behaviour** — 31 tests could not execute on a German host at all | `33e4e11`, §6 *Start here* item 1. 280 → **311 of 311** on the German host, 311 of 311 unchanged on the English one |
+| **Principal resolution** — no test asserted that every principal the real `config/` names resolves by a defined path, or that English and German fixtures produce identical SID sets | `e057e62`, §6 *Start here* item 2. **86 of 86**, and 83 of them run on Linux, so CI can carry them |
+
+**What is still open** is §6 *Start here* item 3: the GPC DACL half of the `Import-GPO`
+`<SecurityGroups>` question, which is two read-only commands away from an answer and until then an
+open security question. **Do not tag a release until it is closed** — the repository carries no
+tags yet, so the first one should mean something. Item 4, a second German domain, is not a gate
+but belongs in the release notes as an accepted limit if none is available.
 
 ---
 
@@ -491,13 +495,14 @@ deploy 689/689 with 0 errors, second run 0 actions, audit **433 of 433** with 0 
 above is missing is not that evidence. It is that **the suite could not reproduce it**, and that
 it rests on a single domain.
 
-**Item 1 closed that first half on 2026-09-25**: the 31 ACL tests execute on a German host, so the
-suite now carries the ACL evidence rather than the lab alone. What is left is item 2 — the
-principal-completeness tests, which are what make the *resolution* claim a standing guarantee
-instead of one measured report — and item 3, a security question that is two read-only commands
-away from an answer.
+**Items 1 and 2 both closed on 2026-09-25.** The 31 ACL tests execute on a German host
+(`33e4e11`), and the resolution claim is now a standing guarantee rather than one measured report
+(`e057e62`): every principal the real `config/` names is asserted to resolve by a defined path,
+and the English and localized fixtures are asserted to produce identical SID sets at the resolver
+and in the generated `[Privilege Rights]`. The suite carries both halves of the standard above.
 
-**Do not tag a release until items 2 and 3 below are closed.**
+**What is left is item 3** — a security question that is two read-only commands away from an
+answer. **Do not tag a release until it is closed.**
 
 #### The work, ordered
 
@@ -588,9 +593,23 @@ check, which is rule 2.2 territory. Owner's decision, 2026-09-25: leave it, and 
 record rather than hiding it. It is outside the five files above and does not appear in their
 311.
 
-**2. Write the completeness tests.** Branch: `test/principal-completeness` — a separate branch and
-a separate pull request from item 1, because `CONTRIBUTING.md` wants one concern per PR and the
-two are verified against different things.
+**~~2. Write the completeness tests.~~ Done, 2026-09-25, merged as `e057e62`
+([PR #6](https://github.com/steffenstoeckelnetgo/ActiveDirectoryTierModel/pull/6)).** *Tests only,
+no product code, 0 files changed under `config/`.* `tests/Unit.PrincipalCompleteness.Tests.ps1`
+and `tests/helpers/ConfigPrincipals.ps1`. **86 of 86 on the English lab host `SERVER`** (install
+language `0409`); 83 of 86 in the Linux container, the three that fail there being the ones that
+construct `[SecurityIdentifier]` from a string.
+
+This is what turns "observed once in a lab" into "asserted at every change", which is the owner's
+actual requirement. The two things it asserts:
+
+- every principal named in the **real** `config/` resolves through a *defined* path — not a name
+  lookup fallback;
+- **English and German fixtures produce identical SID sets**, both at the resolver and in the
+  generated `[Privilege Rights]`.
+
+The lab report's `Total: 56, Unresolved: 0` is the same claim as the first bullet, but measured
+once against one directory. This makes it a standing guarantee.
 
 > *This item used to say "designed in `specs/008-german-language-support/plan.md` phase D". There
 > is no phase D:* `plan.md` *has Phases 1–9, and Phase 8 is the tests phase. Phase 8's own named
@@ -600,16 +619,63 @@ two are verified against different things.
 > assertion from the **real** `config/` rather than from a hand-built list, and the
 > `[Privilege Rights]` half. It was never written because it was never designed there.*
 
-This is what turns "observed once in a lab" into "asserted at every change", which is the owner's
-actual requirement:
+**What the real configuration contains**, measured by the tests themselves and asserted as exact
+integers (§4 trap 6):
 
-- every principal named in the **real** `config/` resolves through a *defined* path — not a name
-  lookup fallback;
-- **English and German fixtures produce identical SID sets**, both at the resolver and in the
-  generated `[Privilege Rights]`.
+| | |
+|---|--:|
+| Configuration files read | 17 |
+| Principals referenced | **62** |
+| Names for the 29 groups the configuration creates (`name` + `samaccountname`) | 58 |
+| `literalStrings` | 33 |
+| `identityreference` values (ACL delegations) | 12 |
+| Keys carrying string values | 98 |
 
-The lab report's `Total: 56, Unresolved: 0` is the same claim as the first bullet, but measured
-once against one directory. A test makes it a standing guarantee.
+Of the **27** referenced principals the configuration does not create, **all 27 are genuine
+built-ins** — no typos, no undeclared dependencies: 13 `Canonical…Rid`, 11 `WellKnown`,
+`Administrator` via `ADUser-RID500`, and `DnsAdmins` / `DnsUpdateProxy` on the name path **by
+design**. Those last two are created by the DNS Server role rather than by domain creation, so
+they have no fixed RID to compose and their names are English on every language of Windows; the
+configuration names them under `conditionalGroups`, i.e. "use it if the domain has it".
+
+**Three guards, each proven red on an injected defect** — the defect was injected into a *copy* of
+`config/`, never the real one:
+
+| Guard | Fired on |
+|---|---|
+| no undeclared configuration key names a localizable built-in | `someNewKey = 'Domain Admins'` |
+| no `identityreference` value is a localizable built-in | `BUILTIN\Administrators` |
+| every referenced principal is created by the configuration or has a defined path | `Tier9Phantoms` |
+
+The second one is the load-bearing one. `New-TierModelOuAcl.ps1:82-83` builds an `NTAccount` from
+`identityreference` and calls `.Translate()` — the **only** principal path in the product that is
+language-*dependent* by construction. It is safe solely because all 12 values are Tier Model
+groups the configuration itself names. A built-in there breaks the delegation on a German host,
+which is the exact shape of the 31 failures item 1 was about.
+
+**Two things about the fixtures, before anyone changes them.** The English and localized fixtures
+describe the **same domain answering in two languages** — same domain SID, same allocated RIDs,
+only the rendered names differ. That is deliberately *not* what the parity lab run measured (two
+different domains, where every locally allocated RID differs and has to be normalised away,
+`docs/parity-lab-runbook.md`); holding the domain constant isolates the one variable this project
+is about. And `Source` is compared as deliberately as the SID, because the same SID reached by a
+*different route* means one side fell back to a name lookup — invisible if you compare SIDs alone.
+"No built-in resolves by name" is asserted separately again, since equality would be satisfied if
+**both** sides fell back.
+
+*On the host, stated plainly rather than rounded up.* The acceptance ran on the **English** host.
+That is sufficient here and it is not the compromise it would have been for item 1: this file has
+no host-language dependency by construction — it mocks both directories and never asks the host to
+translate anything — which is precisely what it exists to make checkable. But "sufficient by
+construction" is an argument, not a measurement. One German run of the same single command would
+convert it, and it costs one command.
+
+*Also new, and worth more than it looks:* **83 of the 86 run on Linux**, so they run in CI. Every
+localization assertion in this repository before this one needed a Windows host.
+
+*A finding this work produced rather than closed:* the localization report's own walker is six
+principals short — see *Housekeeping* below. It is its own concern and its own pull request, and
+the test deliberately does not depend on it.
 
 **3. Run the two read-only commands in §6 *Open questions*** — the GPC DACL half of the
 `Import-GPO` `<SecurityGroups>` question. **The settings half is answered:** the parity run of
@@ -809,11 +875,10 @@ Ordered. Items 1–3 were the acceptance gate for the localization work itself; 
    `Repair-TierModelCanonicalAcl.ps1` (182), `Test-TierModelAdmx.ps1` (140),
    `TierModel.psm1` (137). Those counts are themselves Linux figures and shrink on Windows.
 
-5. **Add the completeness tests** — the same work as *Start here* item 2, stated twice in this
-   file; that item is the one to read, and it carries the correction of the "phase D" reference
-   this line used to repeat. Every principal in the real config must resolve by a defined path;
-   English and German fixtures must produce **identical SID sets**, both at the resolver and in
-   the generated `[Privilege Rights]`.
+5. ~~**Add the completeness tests.**~~ **Done, 2026-09-25, `e057e62`.** The same work as
+   *Start here* item 2, stated twice in this file; that item is the one to read — it carries the
+   measured figures, the three guards, and the correction of the "phase D" reference this line
+   used to repeat.
 6. **German lab acceptance.** Phases A–F are done. Phase F is the parity proof and it
    passed on 2026-09-24; the entry is at the end of this item.
 
