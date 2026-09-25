@@ -1,7 +1,8 @@
 # German Lab Runbook — verifying localized Active Directory support
 
-Step-by-step verification of the `claude/beautiful-galileo-skfp32` branch on a **German Windows
-host against a German Active Directory**.
+Step-by-step verification of `main` on a **German Windows host against a German Active
+Directory**. The localization work merged to `main` on 2026-09-17 and there is no feature branch
+to check out any more.
 
 Why this document exists: the change makes the Tier Model resolve built-in principals by
 well-known SID instead of by directory name, so that a localized domain deploys the same
@@ -44,7 +45,6 @@ runbook: it either proves the SID resolution or finds a real bug, and it costs n
 ```powershell
 git clone https://github.com/steffenstoeckelnetgo/ActiveDirectoryTierModel
 cd ActiveDirectoryTierModel
-git checkout claude/beautiful-galileo-skfp32
 
 # Pester 5.9.0 exactly. tests/Invoke-AllTests.ps1 pins that version as known-good and warns
 # "suite may not be fully green" on anything else; a version range installs the newest 5.x and
@@ -53,17 +53,19 @@ Install-Module Pester -RequiredVersion 5.9.0 -Force -Scope CurrentUser
 Install-Module PSScriptAnalyzer -Force -Scope CurrentUser
 ```
 
-**Refreshing a copy from an earlier run.** The branch moves; a second run against a stale
-working copy proves nothing.
+**Refreshing a copy from an earlier run.** `main` moves; a second run against a stale working
+copy proves nothing. Note the commit you verified — a figure without one cannot be compared to
+anything later.
 
 ```powershell
 # With git:
 git fetch origin
-git reset --hard origin/claude/beautiful-galileo-skfp32
+git reset --hard origin/main
+git rev-parse --short HEAD    # write this down; it belongs in every result you report
 
 # Without git: re-download and expand into a FRESH directory. Expand-Archive does not
 # reliably overwrite into an occupied target, so an existing folder silently keeps old files.
-$url = 'https://github.com/steffenstoeckelnetgo/ActiveDirectoryTierModel/archive/refs/heads/claude/beautiful-galileo-skfp32.zip'
+$url = 'https://github.com/steffenstoeckelnetgo/ActiveDirectoryTierModel/archive/refs/heads/main.zip'
 Invoke-WebRequest $url -OutFile "$env:TEMP\tiermodel.zip"
 Remove-Item C:\Temp\TierModel -Recurse -Force -ErrorAction SilentlyContinue
 Expand-Archive "$env:TEMP\tiermodel.zip" -DestinationPath C:\Temp\TierModel
