@@ -70,11 +70,16 @@ that gap closed on 2026-09-25:
 | **ACL behaviour** — 31 tests could not execute on a German host at all | `33e4e11`, §6 *Start here* item 1. 280 → **311 of 311** on the German host, 311 of 311 unchanged on the English one |
 | **Principal resolution** — no test asserted that every principal the real `config/` names resolves by a defined path, or that English and German fixtures produce identical SID sets | `e057e62`, §6 *Start here* item 2. **86 of 86**, and 83 of them run on Linux, so CI can carry them |
 
-**What is still open** is §6 *Start here* item 3: the GPC DACL half of the `Import-GPO`
-`<SecurityGroups>` question, which is two read-only commands away from an answer and until then an
-open security question. **Do not tag a release until it is closed** — the repository carries no
-tags yet, so the first one should mean something. Item 4, a second German domain, is not a gate
-but belongs in the release notes as an accepted limit if none is available.
+**Item 3 closed on 2026-09-25 as well**, so nothing gates a release any more. The GPC DACL half of
+the `Import-GPO` `<SecurityGroups>` question was measured on the lab: **146 Tier GPOs examined, 0
+foreign SIDs on any GPC DACL**. Together with the settings half — 0 foreign SIDs in
+`[Privilege Rights]` across two domains, parity run 2026-09-24 — the question is answered in full.
+`Import-GPO` does not carry the source descriptor.
+
+Item 4 is not a gate and stays open by nature: it is the list of what has never been measured, and
+it belongs in the release notes rather than in a fix. As of 2026-09-25 that list has a live entry —
+the first production target is a **multi-DC** forest root, and every figure in this repository
+binds a single DC.
 
 ---
 
@@ -677,23 +682,29 @@ localization assertion in this repository before this one needed a Windows host.
 principals short — see *Housekeeping* below. It is its own concern and its own pull request, and
 the test deliberately does not depend on it.
 
-**3. Run the two read-only commands in §6 *Open questions*** — the GPC DACL half of the
-`Import-GPO` `<SecurityGroups>` question. **The settings half is answered:** the parity run of
-2026-09-24 read every `[Privilege Rights]` entry out of SYSVOL on both domains and found
-**0 foreign domain SIDs**, so nothing from the source lab reached the settings. What nobody has
-looked at is the GPC's full DACL. Minutes of work, and until then it is an open security
-question.
+**~~3. Run the two read-only commands in §6 *Open questions*.~~ Done, 2026-09-25. The
+`Import-GPO` `<SecurityGroups>` question is answered in full.**
 
-**It is now a targeted check rather than a sweep.** The backups were counted on 2026-09-25 (§6
-*Open questions*): all 78 foreign-SID entries are `bkp:Source="FromDACL"`, they live only in
-`Backup.xml`, and they are Domain/Enterprise Admins of **five named source domains**. Search the
-GPC DACLs for those five prefixes.
+| Half | Measured | Result |
+|---|---|---|
+| Settings — `[Privilege Rights]` in SYSVOL | parity run, 2026-09-24, **two** domains | **0 foreign SIDs** |
+| **GPC DACL** | lab `DC1`, 2026-09-25, **146 Tier GPOs** | **0 foreign SIDs** |
 
-**And it is no longer only a release gate.** These GPOs are the ones a production deployment
-imports. If `Import-GPO` did write the source descriptor, a production domain would acquire ACEs
-referencing five unrelated directories — so this belongs **before** the first production rollout,
-not merely before a tag. Run it on the lab, which still stands and already carries the imported
-GPOs.
+`Import-GPO` imports settings and does not write the source GPO's security descriptor. The 78
+`bkp:Source="FromDACL"` entries stay in `Backup.xml` where they are inert.
+
+**The `146` is not decoration.** The check is a loop over
+`Get-GPO -All | Where-Object DisplayName -like '`*- Tier*'` that prints only offenders, so a filter
+matching **nothing** produces exactly the same empty output as a filter matching everything and
+finding nothing wrong. The count was taken separately and confirms the loop read 146 GPC DACLs.
+Whoever repeats this check: take the count too. An empty result and a check that never ran are
+indistinguishable otherwise — the same trap as §4 trap 6, and the same shape as the `16/16 passed`
+incident in item 2.
+
+*What it establishes and what it does not.* It was measured on the **lab**, whose GPOs were
+imported from the same `config/gpo/` backups a production run uses — which is exactly why it
+transfers. It says nothing about GPOs that already exist in a target domain; those are the
+collision check's business (`optional/Test-TierModelCollision.ps1`).
 
 **4. A second German domain, or say plainly that there is not one.** Everything measured comes
 from `int.promiseIT.de`: forest root, Windows 2025 domain, one DC, German Windows 11 as the admin
@@ -1100,10 +1111,22 @@ Ordered. Items 1–3 were the acceptance gate for the localization work itself; 
   its English name. One domain is not every domain, so the fallback in
   `Resolve-TierModelDelegationOuDn` stays; it simply never fires here. Removing it needs a
   second localized domain to confirm against, not this one measurement.
-- **Does `Import-GPO` carry the source lab's `<SecurityGroups>` names into the imported GPO?**
-  `config/gpo/**/Backup.xml` contains the source domain's `Domain Admins` / `Enterprise Admins`
-  with their original SIDs. Expected to be inert because `Import-GPO` imports settings rather
-  than the GPO security descriptor.
+- ~~**Does `Import-GPO` carry the source lab's `<SecurityGroups>` names into the imported GPO?**~~
+  **Answered, measured, both halves — 2026-09-25. It does not.** The expectation was that it would
+  be inert because `Import-GPO` imports settings rather than the GPO security descriptor; that is
+  now measured rather than expected:
+
+  | Half | Measured on | Result |
+  |---|---|---|
+  | `[Privilege Rights]` in SYSVOL | two domains, parity run 2026-09-24 | **0 foreign SIDs** |
+  | **GPC DACL** | lab `DC1`, **146** Tier GPOs read | **0 foreign SIDs** |
+
+  The `146` is load-bearing: the check prints only offenders, so an empty result from a filter that
+  matched nothing is indistinguishable from a clean one. The count was taken separately. Anyone
+  repeating this check on another domain should take it too.
+
+  The detail below stays because it is what makes the check cheap to repeat — and because a future
+  change to `config/gpo/` could reintroduce the question.
 
   **What is actually in the backups, counted 2026-09-25 rather than described.** Every one of the
   **78** foreign-SID entries is `bkp:Source="FromDACL"` — recorded from the source GPO's access
@@ -1159,7 +1182,15 @@ Ordered. Items 1–3 were the acceptance gate for the localization work itself; 
       Select-Object -First 20 Path, Line
   ```
 
-  No output from either means inert, and the question is answered by measurement.
+  No output from either means inert — **but only alongside the count**, because the loop prints
+  offenders and says nothing about how many objects it read:
+
+  ```powershell
+  (Get-GPO -All -Server $dc | Where-Object DisplayName -like '`*- Tier*').Count
+  ```
+
+  On the lab that returned **146**, which is what makes the empty result above evidence rather
+  than an absence of evidence.
 
 ---
 

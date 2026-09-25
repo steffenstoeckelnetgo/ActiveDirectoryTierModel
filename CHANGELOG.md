@@ -5,9 +5,33 @@ All notable changes to the TierModel project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.2.0] - 2026-09-25
+
+The first tagged release. `ModuleVersion` has read 2.2.0 since the localization work merged on
+2026-09-17; the tag waited until the three acceptance items in `CLAUDE.md` §6 were closed by
+measurement rather than by reading.
+
+**Accepted limits, stated rather than left unsaid.** Everything measured comes from
+`int.promiseIT.de` and its English twin: forest root, Windows 2025, **one domain controller**,
+green-field. Untested, and therefore not claimed: multi-DC replication, a populated directory,
+child domains, RODCs, an English host against a localized domain, and any language other than
+German. `docs/production-rollout-runbook.md` covers the first two for operators taking this into
+production.
 
 ### Verified
+- **`Import-GPO` does not carry the source backups' security descriptor — measured, both halves,
+  2026-09-25.** `config/gpo/**/Backup.xml` carries 78 `bkp:Source="FromDACL"` entries: Domain and
+  Enterprise Admins (RID 512 and 519 only) of five source domains — `security.local` (Microsoft's
+  SCT build domain), `TAILSPIN.COM`, `tailspintoys.com`, `wingtiptoys.com` and `tierlab.internal`.
+  They appear in `Backup.xml` and in no settings file. The settings half was already measured on
+  two domains by the parity run of 2026-09-24: **0 foreign SIDs** in `[Privilege Rights]` across
+  1791 entries. The GPC DACL half was measured on the lab on 2026-09-25: **146 Tier GPOs read, 0
+  foreign SIDs**. The count matters and is recorded deliberately — the check prints only offenders,
+  so an empty result from a filter that matched nothing is indistinguishable from a clean one.
+  Taken together the open question is closed: the five source domains' principals stay inert in the
+  backup files. This was measured on the lab, whose GPOs are imported from the same backups a
+  production run uses, which is why it transfers; it says nothing about GPOs that already exist in
+  a target domain.
 - **Principal resolution is asserted against the real configuration, 2026-09-25, commit
   `e057e62`.** The lab report's `Total: 56, Unresolved: 0` was one measurement, against one
   directory, on one day. `tests/Unit.PrincipalCompleteness.Tests.ps1` makes it a standing
