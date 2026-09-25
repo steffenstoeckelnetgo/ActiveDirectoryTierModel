@@ -588,11 +588,20 @@ check, which is rule 2.2 territory. Owner's decision, 2026-09-25: leave it, and 
 record rather than hiding it. It is outside the five files above and does not appear in their
 311.
 
-**2. Write the completeness tests** (designed in `specs/008-german-language-support/plan.md`
-phase D, never written). Branch: `test/principal-completeness` — a separate branch and a separate
-pull request from item 1, because `CONTRIBUTING.md` wants one concern per PR and the two are
-verified against different things. This is what turns "observed once in a lab" into "asserted at every
-change", which is the owner's actual requirement:
+**2. Write the completeness tests.** Branch: `test/principal-completeness` — a separate branch and
+a separate pull request from item 1, because `CONTRIBUTING.md` wants one concern per PR and the
+two are verified against different things.
+
+> *This item used to say "designed in `specs/008-german-language-support/plan.md` phase D". There
+> is no phase D:* `plan.md` *has Phases 1–9, and Phase 8 is the tests phase. Phase 8's own named
+> items are done — among them* `tests/Unit.CanonicalPrincipal.Tests.ps1`*, which already asserts
+> that every §2.2(A) name resolves to the same SID against an English fixture and a German one
+> where every name lookup throws. What this item asks for is not in* `plan.md` *at all: driving the
+> assertion from the **real** `config/` rather than from a hand-built list, and the
+> `[Privilege Rights]` half. It was never written because it was never designed there.*
+
+This is what turns "observed once in a lab" into "asserted at every change", which is the owner's
+actual requirement:
 
 - every principal named in the **real** `config/` resolves through a *defined* path — not a name
   lookup fallback;
@@ -640,6 +649,24 @@ false differences from domain-allocated RIDs (`ef972d5`, `292d9b7`), and
   prevent. Both files now carry a note that the figure understates by the 31 ACL tests. One German
   `pwsh -NonInteractive -File .\tests\Invoke-AllTests.ps1` on `main` replaces the note with a
   number.
+- **The localization report's principal walker is six principals short.** Measured 2026-09-25
+  while writing the item 2 tests: `Get-ConfiguredPrincipalName` in
+  `optional/Test-TierModelLocalizedDeployment.ps1` knows **seven** principal-carrying keys and the
+  configuration uses **eleven**. It never sees `memberComputerGroups`,
+  `allowedToAuthenticateFromDeviceGroups` or `alwaysInclude`, so its docstring claim *"every
+  principal the configuration names"* covers **56 of 62** — and the two keys it misses are the
+  Authentication Policy Silos, which is where the localization defect of §5 lived.
+
+  **It is a coverage gap, not a wrong result, and not an oversight in the design.**
+  `specs/008-german-language-support/spec.md` §2.2(C) names `config/tiermodel-authsilos.json` and
+  its two built-ins explicitly; the product was fixed for them (§5). Only the *report's* inventory
+  never learned the keys. The six principals it misses are all Tier Model groups, language-
+  independent by construction, so `0 unresolved` held for what it did measure.
+
+  Fix: add the three keys to `$principalKeys` and `tiermodel-authsilos.json` to the files it
+  walks. Its own concern and its own PR. **`tests/helpers/ConfigPrincipals.ps1` must not become
+  its source** — a test that depended on the script it checks would certify the gap instead of
+  closing it.
 - **`New-TierModelGroup` with an empty plan** raises `GroupApplyFailed`: `$Plan.Actions |
   Where-Object` collapses to `$null` and `.Count` throws under `Set-StrictMode`. Pre-existing, its
   own concern, own issue.
@@ -782,10 +809,11 @@ Ordered. Items 1–3 were the acceptance gate for the localization work itself; 
    `Repair-TierModelCanonicalAcl.ps1` (182), `Test-TierModelAdmx.ps1` (140),
    `TierModel.psm1` (137). Those counts are themselves Linux figures and shrink on Windows.
 
-5. **Add the completeness tests** designed but not yet written (`specs/008-german-language-support/plan.md`,
-   phase D): every principal in the real config must resolve by a defined path; English and
-   German fixtures must produce **identical SID sets**, both at the resolver and in the generated
-   `[Privilege Rights]`.
+5. **Add the completeness tests** — the same work as *Start here* item 2, stated twice in this
+   file; that item is the one to read, and it carries the correction of the "phase D" reference
+   this line used to repeat. Every principal in the real config must resolve by a defined path;
+   English and German fixtures must produce **identical SID sets**, both at the resolver and in
+   the generated `[Privilege Rights]`.
 6. **German lab acceptance.** Phases A–F are done. Phase F is the parity proof and it
    passed on 2026-09-24; the entry is at the end of this item.
 
