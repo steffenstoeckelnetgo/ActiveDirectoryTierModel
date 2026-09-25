@@ -684,12 +684,34 @@ the test deliberately does not depend on it.
 looked at is the GPC's full DACL. Minutes of work, and until then it is an open security
 question.
 
+**It is now a targeted check rather than a sweep.** The backups were counted on 2026-09-25 (§6
+*Open questions*): all 78 foreign-SID entries are `bkp:Source="FromDACL"`, they live only in
+`Backup.xml`, and they are Domain/Enterprise Admins of **five named source domains**. Search the
+GPC DACLs for those five prefixes.
+
+**And it is no longer only a release gate.** These GPOs are the ones a production deployment
+imports. If `Import-GPO` did write the source descriptor, a production domain would acquire ACEs
+referencing five unrelated directories — so this belongs **before** the first production rollout,
+not merely before a tag. Run it on the lab, which still stands and already carries the imported
+GPOs.
+
 **4. A second German domain, or say plainly that there is not one.** Everything measured comes
 from `int.promiseIT.de`: forest root, Windows 2025 domain, one DC, German Windows 11 as the admin
 host. Untested: child domains, multi-DC replication, RODC, an **English host against a German
 domain** (the mixed case the docs explicitly permit), and any language other than German. This is
 the difference between "works on that domain" and "works on German AD". If no second domain is
 available, that belongs in the release notes as an accepted limit, not left unsaid.
+
+**Multi-DC stopped being hypothetical on 2026-09-25**: the first production target is a forest
+root with several domain controllers. `docs/production-rollout-runbook.md` carries what that
+changes, and the load-bearing part is a split nobody could have seen on a one-DC lab —
+`New-GPO` / `Import-GPO` write through the caller's `-PreferredDc`
+(`Import-TierModelGpo.ps1:84`), but the SYSVOL writes and the policy-populated probe both go
+through the **PDC emulator** (`Update-TierModelGPOConfig.ps1:94`, `Get-TierModelGpo.ps1:41`). On
+one DC those are the same machine. On several they are not, and 23 GPOs take a `configure` action
+that depends on the GPC having replicated first. The runbook's answer is to pass the PDC emulator
+as `-PreferredDc`, which aligns all three and costs nothing — but that is a mitigation, not a
+measurement, and multi-DC replication remains untested until a run reports back.
 
 **5. ~~The English parity run.~~ Done, 2026-09-24, commit `ce528e4`.** The change altered
 behaviour for English deployments too — a failed Deny-Apply ACE is now a hard stop, `Converged`
@@ -1082,6 +1104,24 @@ Ordered. Items 1–3 were the acceptance gate for the localization work itself; 
   `config/gpo/**/Backup.xml` contains the source domain's `Domain Admins` / `Enterprise Admins`
   with their original SIDs. Expected to be inert because `Import-GPO` imports settings rather
   than the GPO security descriptor.
+
+  **What is actually in the backups, counted 2026-09-25 rather than described.** Every one of the
+  **78** foreign-SID entries is `bkp:Source="FromDACL"` — recorded from the source GPO's access
+  control list — and every one sits in a `Backup.xml`, in **no settings file at all**. They are
+  Domain Admins and Enterprise Admins (RID 512 and 519 only, nothing else) of five source domains:
+
+  | Prefix | Source domain |
+  |---|---|
+  | `S-1-5-21-4160335514-3859470241-1414062150` | `security.local` — Microsoft's SCT build domain |
+  | `S-1-5-21-4174809006-1847067537-7924985` | `TAILSPIN.COM` |
+  | `S-1-5-21-1763162145-2197525068-1859964492` | `tailspintoys.com` |
+  | `S-1-5-21-505425472-1640733182-3942670948` | `wingtiptoys.com` |
+  | `S-1-5-21-3172251048-2974515427-512640283` | `tierlab.internal` — the upstream project's own lab |
+
+  That turns the remaining check from "look for any foreign SID" into "look for these five
+  prefixes", which is what the commands below do. It does **not** answer the question: a
+  `FromDACL` record is exactly the kind `Import-GPO` would use if it wrote the source descriptor,
+  so the finding narrows the search rather than closing it.
 
   **The settings half is answered, on two domains.** The parity run of 2026-09-24 read every
   `[Privilege Rights]` entry out of SYSVOL on both the localized and the English domain and found
