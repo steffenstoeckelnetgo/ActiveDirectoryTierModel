@@ -479,20 +479,50 @@ German Windows cannot translate those, `NTAccount(...).Translate()` throws, and 
 test takes a path the test did not intend (§4 trap 7). The effect: **ACL behaviour — the
 security-relevant part — is currently not verified on the platform this project exists for.**
 
-The fix is mechanical and the pattern is proven: commit `4c84f4a` did exactly this for 8 tests in
-`Unit.WinLapsAclOperations` and `Integration.WinLapsDeployment` — replace the name with the SID
-(`'S-1-5-32-544'`, `'S-1-5-32-545'`, `'S-1-1-0'`, `'S-1-5-10'`) and put a `NOTE:` block at the top
-of the file saying why, so nobody "fixes" it back to a readable name.
+> **This item used to say the fix was "mechanical and the pattern is proven" — replace the name
+> with the SID, as commit `4c84f4a` did for 8 WinLAPS tests. That was checked against the code on
+> 2026-09-25 and it is wrong: it holds for 3 of the 34 sites and fails for the other 31.** The two
+> cases look identical and are not. In the WinLAPS fixtures the literal sat in a **mocked**
+> `Get-Acl` and was read back through `ConvertTo-TierModelIdentitySid`, which returns a SID string
+> unchanged (`Resolve-TierModelPrincipalSid.ps1:506`). In these four files the literal is
+> `Plan.Actions[].Data.identityreference` and reaches the **real, unmocked** cmdlet, which does
+> `New-Object System.Security.Principal.NTAccount($identityReference)` then `.Translate(...)`
+> (`New-TierModelOuAcl.ps1:82-83`). `NTAccount` takes a **name**: given `'S-1-5-32-544'` it looks
+> for an account literally called that, finds none, and throws. The test would still fail, for a
+> new reason. Anyone repeating the "proven pattern" here loses a lab cycle finding that out.
 
-*Verification, both halves required:* every changed test must be **red without the change** (so a
-fixture is not quietly made vacuous), and the suite must go from **2056 to 2087** on the German
-host.
+The workable route is the *other* one §4 trap 7 allows: **the fixture holds the invariant SID and
+asks the host what it calls it** at run time —
+`([SecurityIdentifier]'S-1-5-32-544').Translate([NTAccount]).Value` yields
+`BUILTIN\Administrators` on an English host and `VORDEFINIERT\Administratoren` on a German one,
+and the product translates either back to the same SID. No product code changes: the real
+`config/` only ever names Tier Model groups in `identityreference`, which are language-independent
+by construction, so the product was never the broken part.
 
-*Why 2087 and not 2088:* the 32nd failure (`Unit.Prerequisites`) is not a fixture problem.
+`Unit.CanonicalAcl` is a separate case inside the same item. Its fixtures already carry SIDs; its
+3 failures are the **assertion** `Should -Match 'Everyone|S-1-1-0'`.
+`Test-TierModelCanonicalAcl.ps1:117-121` translates the SID to a name and falls back to the SID
+string *only when translation throws* — `S-1-1-0` always translates, so on a German host the value
+is `Jeder`. Adding literals is chasing; the assertion has to stop depending on a guessed form.
+
+*Verification, both halves required:* the change must be **red without it** (so a fixture is not
+quietly made vacuous), and it must be measured on a German host **and** an English one — the
+German run is the point, the English run is what proves the fixtures did not go vacuous. The five
+files hold 311 tests; the target is **280 → 311 of 311** on German and **311 of 311 unchanged** on
+English. Nothing in those files can be verified on Linux: all five report 0 of 311 there, before
+and after, because `[SecurityIdentifier]` cannot be constructed from a string on that platform.
+
+*Do not carry a suite total into the acceptance record from here.* This item used to say "2056 to
+2087"; that came from `5ebe784`, and the English host already discovered 2111 at `ce528e4` before
+PR #3 added 17 more. Record the **+31 in these five files** plus whatever the whole suite measures
+on the day.
+
+*The 32nd failure stays.* `Unit.Prerequisites` is not a fixture problem:
 `Test-TierModelPrerequisites` reads `IsDomainAdmin` from the real logon token on purpose, so a
 string-typed SID cannot fake membership (§4 trap 8) — it fails precisely **because the lab session
-is a Domain Admin**. On a DA host 2088 is unreachable without redesigning that test. Write 2087
-into the acceptance record rather than hiding the difference.
+is a Domain Admin**. Making it pass on a DA host means weakening exactly that check, which is rule
+2.2 territory. Owner's decision, 2026-09-25: leave it, and write the difference into the record
+rather than hiding it.
 
 **2. Write the completeness tests** (designed in `specs/008-german-language-support/plan.md`
 phase D, never written). Branch: `test/principal-completeness` — a separate branch and a separate
