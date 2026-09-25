@@ -32,7 +32,7 @@ name them so nobody has to guess later:
 ```powershell
 # on each domain, from the repository root
 .\optional\Test-TierModelLocalizedDeployment.ps1 -PreferredDc $dc `
-    -IncludeWinLaps -IncludeAuthSilos -IncludeAudit `
+    -IncludeMsa -IncludeGmsa -IncludeDmsa -IncludeWinLaps -IncludeAuthSilos -IncludeAudit `
     -OutputPath .\parity-en.json      # ...or parity-de.json on the localized domain
 ```
 

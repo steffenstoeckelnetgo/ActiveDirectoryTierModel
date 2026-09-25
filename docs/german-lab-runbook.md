@@ -444,8 +444,12 @@ fine. Either way it is a finding, and the GPO it names is the one to look at in 
 
 ```powershell
 .\optional\Test-TierModelLocalizedDeployment.ps1 -PreferredDc $dc `
-    -IncludeWinLaps -IncludeAuthSilos -IncludeAudit
+    -IncludeMsa -IncludeGmsa -IncludeDmsa -IncludeWinLaps -IncludeAuthSilos -IncludeAudit
 ```
+
+**Mirror the switches Phase C deployed with.** `-IncludeAudit` runs `Audit-TierModel.ps1`, and
+that script audits only the scopes it is asked for. A missing switch does not produce an error --
+it produces a smaller, truthful "zero drift" about a fraction of the deployment.
 
 Read-only. Writes one JSON file containing:
 

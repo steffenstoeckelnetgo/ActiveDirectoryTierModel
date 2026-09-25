@@ -166,6 +166,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   covering 140 such entries, which buries the one finding that would matter: a plain,
   localizable name nobody configured. The rule now exempts what the configuration declares and
   reports only the rest.
+- **`-IncludeAudit` audited a fraction of the deployment and said so truthfully, which is why
+  nobody noticed.** `optional/Test-TierModelLocalizedDeployment.ps1` invoked
+  `Audit-TierModel.ps1` without `-FullDeployment`, so the audit ran only the scopes named by the
+  `-Include*` switches the report script happened to carry. Measured on the German and English
+  lab domains on 2026-09-24: **21 checks instead of 433** — 7 Windows LAPS ACLs, 6 decryptors,
+  4 authentication policies and 4 silos. The 31 OUs, 32 canonical ACLs, 29 groups, 3 users, 105
+  OU ACL delegations, 146 GPOs and 60 ADMX files were never looked at, and the pass still ended
+  `DriftCount: 0`. The 433-check figure recorded in `CLAUDE.md` §6 came from a separately invoked
+  `Audit-TierModel.ps1 -FullDeployment`, never from this switch. `-FullDeployment` is now passed
+  unconditionally, and `-IncludeMsa`, `-IncludeGmsa` and `-IncludeDmsa` were added as
+  pass-throughs so the audit can cover a deployment made with them — the report itself still says
+  nothing about MSAs. Both documented invocations gained the three switches, with a line saying
+  why a missing one is worse than an error.
 
 ### Changed
 - The two English-only prerequisite gates (host install language, well-known group names)

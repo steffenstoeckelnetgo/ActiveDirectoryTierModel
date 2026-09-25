@@ -11,7 +11,13 @@ param(
 
     [switch]$IncludeWinLaps,
 
-    [switch]$IncludeAuthSilos
+    [switch]$IncludeAuthSilos,
+
+    [switch]$IncludeMsa,
+
+    [switch]$IncludeGmsa,
+
+    [switch]$IncludeDmsa
 )
 
 <#
@@ -68,9 +74,16 @@ param(
     Repository root. Defaults to the parent of this script's folder.
 
 .PARAMETER IncludeAudit
-    Additionally run Audit-TierModel.ps1 with -OutputFormat Json and reference its report. That
-    script is read-only by design; this switch exists so the drift findings and the
-    localization evidence can be collected in one pass.
+    Additionally run Audit-TierModel.ps1 with -FullDeployment and -OutputFormat Json, and
+    reference its report. That script is read-only by design; this switch exists so the drift
+    findings and the localization evidence can be collected in one pass.
+
+    -FullDeployment is passed unconditionally, and the reason is measured rather than assumed:
+    without it the audit runs only the scopes named by the -Include* switches, so the pass that
+    was meant to establish "zero drift" checked 21 objects instead of 433 -- OUs, groups, users,
+    the 105 OU ACL delegations, 146 GPOs and 60 ADMX files were never looked at. That gap went
+    unnoticed through the whole German lab cycle because the audit it ran did report zero drift,
+    truthfully, about a fraction of the deployment.
 
 .PARAMETER IncludeWinLaps
     Include the Windows LAPS delegation principals, and pass -IncludeWinLaps to the audit.
@@ -78,13 +91,24 @@ param(
 .PARAMETER IncludeAuthSilos
     Pass -IncludeAuthSilos to the audit.
 
+.PARAMETER IncludeMsa
+    Pass -IncludeMsa to the audit. This script reports nothing about MSAs itself; the switch
+    exists so -IncludeAudit can cover a deployment that was made with -IncludeMsa.
+
+.PARAMETER IncludeGmsa
+    Pass -IncludeGmsa to the audit. See -IncludeMsa.
+
+.PARAMETER IncludeDmsa
+    Pass -IncludeDmsa to the audit. See -IncludeMsa.
+
 .EXAMPLE
     .\optional\Test-TierModelLocalizedDeployment.ps1 -PreferredDc dc01.contoso.local
 
 .EXAMPLE
-    # Full evidence set, including drift findings
+    # Full evidence set, including drift findings. Mirror the switches the deployment was made
+    # with, or the audit reports zero drift about the scopes it did not check.
     .\optional\Test-TierModelLocalizedDeployment.ps1 -PreferredDc dc01.contoso.local `
-        -IncludeWinLaps -IncludeAuthSilos -IncludeAudit
+        -IncludeMsa -IncludeGmsa -IncludeDmsa -IncludeWinLaps -IncludeAuthSilos -IncludeAudit
 
 .NOTES
     Run it twice to prove idempotency -- once after the first deployment and once after a second
@@ -590,13 +614,20 @@ if ($IncludeAudit) {
     try {
         $auditScript = Join-Path $RepositoryRoot 'Audit-TierModel.ps1'
         $auditBase   = [System.IO.Path]::ChangeExtension($OutputPath, $null).TrimEnd('.') + '-audit'
+        # FullDeployment is not optional here. Audit-TierModel.ps1 audits only the scopes it is
+        # asked for, so without it this pass reported zero drift over 21 objects while the
+        # deployment it was verifying had 433 -- see the .PARAMETER IncludeAudit note.
         $auditArgs   = @{
             PreferredDc    = $PreferredDc
+            FullDeployment = $true
             OutputFormat   = 'Json'
             OutputFileBase = $auditBase
         }
         if ($IncludeWinLaps)   { $auditArgs['IncludeWinLaps']   = $true }
         if ($IncludeAuthSilos) { $auditArgs['IncludeAuthSilos'] = $true }
+        if ($IncludeMsa)       { $auditArgs['IncludeMsa']       = $true }
+        if ($IncludeGmsa)      { $auditArgs['IncludeGmsa']      = $true }
+        if ($IncludeDmsa)      { $auditArgs['IncludeDmsa']      = $true }
 
         & $auditScript @auditArgs
         $auditReference = [ordered]@{ Invoked = $true; OutputFileBase = $auditBase }
