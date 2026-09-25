@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Verified
+- **Parity proven on two live domains, 2026-09-24, commit `ce528e4`.** One localized and one
+  English domain, independently built, both forest root and single-DC `Windows2025Domain`,
+  distinguished by their domain SIDs (`…-2230522700-2543936044-3532250090` and
+  `…-1937235960-408727578-445444486`). Both planned **719** actions with the same breakdown,
+  applied **689** with `Errors: 0` and not one Warning in either 2045-line log, converged on the
+  second run (`Applied: 0, Converged: True`), and audited **433** checks with zero drift. Both
+  localization reports: 56 principals, 0 unresolved, `No problems found.`
+  `optional/Compare-TierModelDeploymentReport.ps1` reports **`No differences.`**, exit 0 — the
+  same configuration produces the same security configuration on both domains, and only the
+  rendered names differ. 17 principals carry a German directory name on one side and an English
+  one on the other. **0 foreign domain SIDs** in the `[Privilege Rights]` of either domain, which
+  answers the settings half of the open `Import-GPO` `<SecurityGroups>` question; the GPC DACL
+  half stays open. It proves the two deployments are the *same*, not that either is *correct* —
+  that is what each domain's own audit shows — and it says nothing about a third language, child
+  domains, multi-DC replication or RODCs. Measured on the English host the same day: the suite is
+  **2110 of 2111** green, the one failure being `IsDomainAdmin` read from the real logon token, so
+  the 31 ACL failures on a German host are confirmed as a fixture problem rather than a product
+  defect — which does not close them, because they still cannot execute where it matters.
+
 ### Added
 - **`optional/Compare-TierModelDeploymentReport.ps1`: the English/localized parity proof.**
   Compares two `Test-TierModelLocalizedDeployment` reports and establishes that the same

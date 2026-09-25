@@ -38,9 +38,16 @@ authentication policies into a production directory. The pull request is therefo
 change is ever read as a whole. Run the repo's own checks yourself before pushing; do not push and
 find out.
 
-**Status: functionally complete, verified end to end on a live green-field German domain**
-(`int.promiseIT.de`, German Windows 11 / PowerShell 7.6.6, 2026-09-16). §6 item 1 carries the
-authoritative tables; the headline per phase:
+**Status: functionally complete, verified end to end on a live green-field German domain — and,
+since 2026-09-24, proven equal to an English one.** The parity run put both domains side by side
+at commit `ce528e4` and `optional/Compare-TierModelDeploymentReport.ps1` reported
+**`No differences.`**: the same configuration produces the same security configuration on both,
+only the rendered names differ. That is the claim this whole fork rests on, and it is now measured
+rather than argued — §6 item 6, Phase F, carries both domain SIDs and the figures.
+
+The per-phase headline below is the green-field German cycle (`int.promiseIT.de`, German
+Windows 11 / PowerShell 7.6.6, 2026-09-16); §6 item 1 carries the authoritative tables. The
+English side reproduced every one of these numbers on 2026-09-24.
 
 | Phase | Result |
 |---|---|
@@ -51,8 +58,9 @@ authoritative tables; the headline per phase:
 | Audit | `TotalChecked: 433, Drift 0, Errors 0` — 100 % |
 | Localization report | 56 principals, 0 unresolved, 42 of them carrying a German directory name; **`No problems found.`** |
 
-**What is still open.** The code is merged and the three CI gates are measured, coverage included
-(§6 item 4). What is *not* established is the standard the repository owner set on 2026-09-17:
+**What is still open.** The code is merged, the three CI gates are measured (coverage included,
+§6 item 4) and parity is proven. What is *not* established is the standard the repository owner
+set on 2026-09-17:
 **the product must be demonstrably correct on a German Active Directory, at every change, not once
 by observation.** The lab cycle meets it for one domain; the suite does not yet meet it at all,
 because 31 of its ACL tests cannot execute on a German host. §6 *Start here* has the ordered work.
@@ -500,9 +508,12 @@ change", which is the owner's actual requirement:
 The lab report's `Total: 56, Unresolved: 0` is the same claim as the first bullet, but measured
 once against one directory. A test makes it a standing guarantee.
 
-**3. Run Phase F** — two read-only commands, in §6 *Open questions* below. Does `Import-GPO` carry
-the source lab's `<SecurityGroups>` SIDs into the imported GPO's DACL? Expected inert, never
-verified. Minutes of work, and it is an open security question.
+**3. Run the two read-only commands in §6 *Open questions*** — the GPC DACL half of the
+`Import-GPO` `<SecurityGroups>` question. **The settings half is answered:** the parity run of
+2026-09-24 read every `[Privilege Rights]` entry out of SYSVOL on both domains and found
+**0 foreign domain SIDs**, so nothing from the source lab reached the settings. What nobody has
+looked at is the GPC's full DACL. Minutes of work, and until then it is an open security
+question.
 
 **4. A second German domain, or say plainly that there is not one.** Everything measured comes
 from `int.promiseIT.de`: forest root, Windows 2025 domain, one DC, German Windows 11 as the admin
@@ -511,66 +522,17 @@ domain** (the mixed case the docs explicitly permit), and any language other tha
 the difference between "works on that domain" and "works on German AD". If no second domain is
 available, that belongs in the release notes as an accepted limit, not left unsaid.
 
-**5. The English parity run.** The change altered behaviour for English deployments too — a failed
-Deny-Apply ACE is now a hard stop, `Converged` means something different, the GPO import retries.
-Nobody has run the runbook against an English domain since. The suite covers it with mocks; a live
-run is a different thing. **An English lab domain is available** (owner, 2026-09-17), and the
-tooling now exists: `docs/parity-lab-runbook.md` is the procedure and
-`optional/Compare-TierModelDeploymentReport.ps1` does the comparison (PR #2).
+**5. ~~The English parity run.~~ Done, 2026-09-24, commit `ce528e4`.** The change altered
+behaviour for English deployments too — a failed Deny-Apply ACE is now a hard stop, `Converged`
+means something different, the GPO import retries — so a live English run was owed. Both domains
+were deployed green-field from the same commit and compared:
+`optional/Compare-TierModelDeploymentReport.ps1` reports **`No differences.`**, exit 0. The full
+figures, both domain SIDs and what the run does *not* prove are in item 6 under Phase F.
 
-*The precondition that is easy to skip and fatal to the result:* **both domains must deploy from
-the same, current commit.** The German figures in item 1 come from `5ebe784`; `e5a9a67` — the
-`Converged` fix — landed afterwards and touches `Deploy-TierModel.ps1` and
-`New-TierModelGroup.ps1`. Comparing across that boundary compares two different products. The
-German side therefore has to be re-run too; this is not a repeat out of caution.
-
-*And do not diff the two reports as text.* Every domain-scoped principal in `[Privilege Rights]`
-carries its own domain's SID as a prefix, so the same Domain Admins reads differently on the two
-domains — 1651 SID entries across 29 GPOs of false differences in the measured lab data. The
-comparison normalises each report's own domain SID first and leaves a *foreign* one verbatim,
-because a foreign SID is the finding rather than the noise. Three places in this repository used
-to instruct the text diff; all three were corrected in PR #2.
-
-#### Next session: run the parity test
-
-This is the agreed next piece of work, and it is the one that closes item 5. **The session does
-not deploy anything.** The repository owner drives two lab domains; the session's job is to say
-what to run, check each output against the preconditions below, and compare the two reports at the
-end. `docs/parity-lab-runbook.md` is the full procedure — this block is what to hold in mind while
-walking someone through it.
-
-**Order, and what each side must show before the comparison means anything:**
-
-| Side | What it is | Must report |
-|---|---|---|
-| **German** (`int.promiseIT.de`) | already deployed, so this is an **idempotency pass, not a rebuild** | `Applied: 0`, `Converged: True`; audit `Drift 0 / Errors 0` |
-| **English** | first deployment | deploy `Errors: 0`; **second run** `Applied: 0 / Converged: True`; audit `Drift 0 / Errors 0` |
-
-*Why the German side is cheap:* both domains must report from the same, current commit, and the
-German figures in item 1 predate `e5a9a67`. But that commit is **purely reporting** — its only
-changed lines assign `$overallConverged`, `$standaloneConverged` and `$converged`, and those are
-read solely for the console summary (`Deploy-TierModel.ps1:2843`, `:3563`) and as a returned field
-(`:1726`). No condition gates work on them, so the directory's state is untouched and a re-run
-applies nothing. Do not let anyone rebuild that domain for this.
-
-Comparing a finished deployment against a half-finished one produces differences that are about
-completeness, not about language. That is why the preconditions come first.
-
-**Then compare** — `optional/Compare-TierModelDeploymentReport.ps1 -ReferencePath .\parity-en.json
--DifferencePath .\parity-de.json`. Never a text diff; the reason is in item 5.
-
-**Bring back:** `parity-en.json`, `parity-de.json`, and the comparison's console output (it also
-writes its own JSON).
-
-**Reading the result.** `No differences.` is the parity proof — it establishes the two deployments
-are **the same**, not that either is **correct**; correctness is what each domain's own audit
-shows. It holds for those two domains at that commit, not for every language or topology. Record
-it in §6 item 6 as a Phase F entry with the commit and both domain names, and add a `CHANGELOG`
-line. Any difference: read it by `Kind` — the table in `docs/parity-lab-runbook.md` §3 says which
-are expected and which are defects.
-
-**What this run does not close:** items 1 and 2 (the 31 ACL test fixtures, the completeness
-tests). Both are still open afterwards, and §0 says no tag until they are.
+Two things that run left behind, both now fixed and merged: the comparison itself reported 84
+false differences from domain-allocated RIDs (`ef972d5`, `292d9b7`), and
+`Test-TierModelLocalizedDeployment.ps1`'s `-IncludeAudit` was auditing 21 checks instead of 433
+(`fc7242b`). Neither touches product code.
 
 #### Housekeeping, not gating
 
@@ -719,7 +681,8 @@ Ordered. Items 1–3 are the actual acceptance gate.
    phase D): every principal in the real config must resolve by a defined path; English and
    German fixtures must produce **identical SID sets**, both at the resolver and in the generated
    `[Privilege Rights]`.
-6. **German lab acceptance.** Phases A–E are done; F is open.
+6. **German lab acceptance.** Phases A–F are done. Phase F is the parity proof and it
+   passed on 2026-09-24; the entry is at the end of this item.
 
    **Phase B (plan) passed** on `int.promiseIT.de`: prerequisites validated, 718 actions, no
    `RequiredGroupNotFound` — the two blockers the old code stopped at are gone. The canary
@@ -852,10 +815,55 @@ Ordered. Items 1–3 are the actual acceptance gate.
    - Third independent confirmation that `DomainControllersContainer` is
      `OU=Domain Controllers,DC=int,DC=promiseIT,DC=de` — **not** localized on this domain.
 
-   **Still open in Phase E:** nothing, other than running the same report on an English domain
-   and comparing the two with `optional/Compare-TierModelDeploymentReport.ps1` — the parity
-   proof, and **not** a text diff, for the reason in *Start here* item 5. Use
-   `tests/Manual.Integration.Tests.xlsx` for the manual checklist.
+   **Phase F (parity) passed — 2026-09-24, commit `ce528e4`. The claim this work rests on is
+   established.** Two independently built domains, both forest root, both single-DC,
+   `Windows2025Domain`, both answering to the DNS name `int.promiseIT.de` and distinguished by
+   their domain SIDs:
+
+   | | localized | English |
+   |---|---|---|
+   | DC | `DC1`, SID `…-2230522700-2543936044-3532250090` | `server`, SID `…-1937235960-408727578-445444486` |
+   | Host | `de-DE`, install language `0407` | install language `0409` |
+   | Plan | 719 actions | 719 actions, same breakdown, `Already exist: 2` on both |
+   | Deploy | `Applied: 689, Errors: 0`, 2m 57s | `Applied: 689, Errors: 0`, 2m 40s |
+   | Second run | `Applied: 0, Converged: True` | `Applied: 0, Converged: True` |
+   | Audit | `433 / Drift 0 / Errors 0` | `433 / Drift 0 / Errors 0` |
+   | Report | 56 principals, 0 unresolved, `No problems found.` | same, `No problems found.` |
+
+   Both deploy logs are 2045 lines with 170 Debug and 1875 Info entries and **not one Warning or
+   Error**; both second runs are 321 lines. Every phase count matches: 31 OUs, 29 groups, 105 OU
+   ACLs, GPO 146 created / 123 imported / 23 configured / 131 linked, 60 ADMX, MSA/gMSA/dMSA 4
+   each, Windows LAPS 25 planned → 17 applied → 0 on the second run, silo gate 8 of 8.
+
+   **`optional/Compare-TierModelDeploymentReport.ps1`: `No differences.`, exit 0**, with 31
+   principals compared by identity rather than by RID. Read by `Kind`, there were none of any
+   class, and **0 foreign domain SIDs on either side** — which settles the settings half of the
+   `Import-GPO` `<SecurityGroups>` question in *Open questions* below, on two domains. The GPC
+   DACL half is still open.
+
+   *Read the first run of that comparison as a lesson, not a footnote:* against these same two
+   reports it first printed **84 differences**, 31 `SidDiffers` and 53 `ValuesDiffer`, every one
+   of them noise from domain-allocated RIDs that differed by exactly one. That defect is fixed
+   (`ef972d5`), and the `No differences.` above is from the fixed script. A comparison tool that
+   cries wolf on identical deployments is worse than none, because the only conclusion available
+   from its output is the wrong one.
+
+   Two things the localized figures do **not** carry over to: 17 principals resolve to a German
+   directory name on one domain and an English one on the other — `Domain Admins →
+   Domänen-Admins`, `Enterprise Admins → Organisations-Admins` — and the reports' own
+   `LocalizedNameCount` (42 vs 25) counts that *together with* principals having no directory
+   object at all, so the meaningful number is the difference, not either figure.
+
+   **What this does not prove.** That either deployment is *correct* — that is what each domain's
+   own audit shows. Nothing about a third language, and nothing about topologies neither domain
+   has: child domains, multi-DC replication, RODC, or an English host against a localized domain.
+
+   **Also measured that day, on the English host: the suite is 2110 of 2111 green.** The single
+   failure is `Unit.Prerequisites` / `IsDomainAdmin`, §4 trap 8. That settles what *Start here*
+   item 1 asserts: the 31 ACL failures are a fixture problem and not a product defect — same code,
+   same tests, a host whose `NTAccount(...).Translate()` can resolve the English literals. It does
+   **not** close item 1: those tests still cannot execute on a German host, which is the platform
+   this project exists for.
 7. **German ADML content.** `optional/New-TierModelAdmlManifest.ps1` and the procedure in
    `docs/admx-management.md` are ready; the `.adml` files are Microsoft redistributables and must
    be supplied by the operator. `download.microsoft.com` is blocked from the build environment
@@ -873,7 +881,17 @@ Ordered. Items 1–3 are the actual acceptance gate.
 - **Does `Import-GPO` carry the source lab's `<SecurityGroups>` names into the imported GPO?**
   `config/gpo/**/Backup.xml` contains the source domain's `Domain Admins` / `Enterprise Admins`
   with their original SIDs. Expected to be inert because `Import-GPO` imports settings rather
-  than the GPO security descriptor — **still expected, not verified.**
+  than the GPO security descriptor.
+
+  **The settings half is answered, on two domains.** The parity run of 2026-09-24 read every
+  `[Privilege Rights]` entry out of SYSVOL on both the localized and the English domain and found
+  **0 SIDs belonging to neither** — 1242 of 1791 entries carry the reading domain's own SID and
+  the rest are well-known or the declared `literalStrings`. Nothing from the source lab reached
+  the settings. The comparison is built to surface exactly this: a foreign SID is deliberately
+  left verbatim while each report's own domain SID is normalised, so it would have shown up.
+
+  **The GPC DACL half is still not verified.** The localization report checks only that the two
+  Deny-Apply ACEs are present, not that nothing else is. The two commands below settle it.
 
   The localization report narrows it but does not close it. Every `[Privilege Rights]` SID it
   read from SYSVOL carries this domain's prefix `S-1-5-21-2230522700-2543936044-3532250090`, so
