@@ -8,6 +8,16 @@ Describe "Test-TierModelCanonicalAcl — ByBytes path" -Tag 'Unit', 'CanonicalAc
         $ModulePath = Join-Path $PSScriptRoot '..' 'modules' 'TierModel' 'TierModel.psd1'
         Import-Module $ModulePath -Force
 
+        . "$PSScriptRoot\helpers\LocalizedPrincipals.ps1"
+
+        # Test-TierModelCanonicalAcl reports the offender as the name the LOCAL host renders
+        # for the SID, and only falls back to the SID string when that translation THROWS
+        # (Test-TierModelCanonicalAcl.ps1:117-121). S-1-1-0 always translates, so on a German
+        # host the value is 'Jeder' -- which is why 'Should -Match ''Everyone|S-1-1-0''' failed
+        # there. Ask this host for the name instead of guessing at literals.
+        $script:EveryoneName = Get-TestPrincipalName -Sid 'S-1-1-0'
+        $script:SystemName   = Get-TestPrincipalName -Sid 'S-1-5-18'
+
         # Build deterministic SD bytes from well-known SIDs.
         # Canonical rank order: explicit Deny=0, explicit Allow=1, inherited Deny=2, inherited Allow=3.
         # Non-canonical = an explicit Allow before an explicit Deny.
@@ -122,7 +132,7 @@ Describe "Test-TierModelCanonicalAcl — ByBytes path" -Tag 'Unit', 'CanonicalAc
 
         It "Returns FirstOffendingPrincipal matching Everyone" {
             $result = Test-TierModelCanonicalAcl -SecurityDescriptorBytes $script:NonCanonicalBytes
-            $result.FirstOffendingPrincipal | Should -Match 'Everyone|S-1-1-0'
+            $result.FirstOffendingPrincipal | Should -Be $script:EveryoneName
         }
 
         It "Echoes back DistinguishedName in ByBytes mode" {
@@ -141,8 +151,8 @@ Describe "Test-TierModelCanonicalAcl — ByBytes path" -Tag 'Unit', 'CanonicalAc
 
         It "Reports only the first offender (Everyone / S-1-1-0), not the later SYSTEM violation" {
             $result = Test-TierModelCanonicalAcl -SecurityDescriptorBytes $script:MultiViolBytes
-            $result.FirstOffendingPrincipal | Should -Match 'Everyone|S-1-1-0'
-            $result.FirstOffendingPrincipal | Should -Not -Match 'SYSTEM|S-1-5-18'
+            $result.FirstOffendingPrincipal | Should -Be $script:EveryoneName
+            $result.FirstOffendingPrincipal | Should -Not -Be $script:SystemName
         }
     }
 
@@ -207,7 +217,7 @@ public class FakeLdapAttr {
             $global:_ByServerFixture = $script:NonCanonicalBytes
             $result = Test-TierModelCanonicalAcl -PreferredDc 'dc01.contoso.com' -DistinguishedName 'DC=contoso,DC=com'
             $result.IsCanonical | Should -Be $false
-            $result.FirstOffendingPrincipal | Should -Match 'Everyone|S-1-1-0'
+            $result.FirstOffendingPrincipal | Should -Be $script:EveryoneName
         }
 
         It "ByServer + canonical bytes -> IsCanonical true and FirstOffendingPrincipal null" {

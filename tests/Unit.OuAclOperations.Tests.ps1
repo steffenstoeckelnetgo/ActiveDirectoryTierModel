@@ -3,6 +3,14 @@ Describe "OU ACL Operations" -Tag "Unit", "OuAcl", "Phase3" {
         # Import the module
         $ModulePath = Resolve-Path "$PSScriptRoot\..\Modules\TierModel"
         Import-Module $ModulePath -Force
+
+        . "$PSScriptRoot\helpers\LocalizedPrincipals.ps1"
+
+        # Built-in principals are localized: these fixtures hold the invariant SID and ask
+        # THIS host what it calls it, because the code under test resolves the value with
+        # NTAccount(...).Translate(). See the note in helpers/LocalizedPrincipals.ps1.
+        $script:BuiltinAdministratorsName = Get-TestPrincipalName -Sid 'S-1-5-32-544'  # Administrators
+        $script:BuiltinUsersName = Get-TestPrincipalName -Sid 'S-1-5-32-545'  # Users
         
         # Test correlation ID
         $script:TestCorrelationId = [System.Guid]::NewGuid().ToString()
@@ -1707,8 +1715,12 @@ Describe "Get-TierModelOuAclFd – Extended Coverage" -Tag "Unit", "OuAcl" {
 # body inside the ShouldProcess block is never reached.
 #
 # Strategy (no production code changes):
-#   1. Use BUILTIN\Administrators / BUILTIN\Users — well-known SIDs that
-#      NTAccount.Translate() resolves on any Windows machine without AD.
+#   1. Use the built-in Administrators / Users groups, named by whatever THIS
+#      host calls them — Get-TestPrincipalName renders the invariant SID at run
+#      time. An English literal was used here before and it was wrong: Windows
+#      localizes these names, so on a German host NTAccount.Translate() throws
+#      and the body below is never reached. That is what made 31 ACL tests fail
+#      there. A SID literal does not help either — NTAccount takes a name.
 #   2. Mock New-Object ONLY for System.DirectoryServices.DirectoryEntry
 #      (via ParameterFilter) so $de.ObjectSecurity / CommitChanges succeed.
 #      All other New-Object calls (NTAccount, ActiveDirectoryAccessRule, etc.)
@@ -1750,13 +1762,13 @@ Describe "New-TierModelOuAcl - Success Path Coverage" -Tag "Unit", "OuAcl" {
                 -MockWith { script:New-FakeDE }
         }
 
-        It "Should apply a single CreateAcl and return Executed=1 for BUILTIN\Administrators" {
+        It "Should apply a single CreateAcl and return Executed=1 for the built-in Administrators group" {
             $plan = [PSCustomObject]@{
                 Actions = @([PSCustomObject]@{
                     Action = 'CreateAcl'
                     Path   = 'OU=Tier0,DC=test,DC=local'
                     Data   = [PSCustomObject]@{
-                        identityreference                  = 'BUILTIN\Administrators'
+                        identityreference                  = $script:BuiltinAdministratorsName
                         activedirectoryrights              = @('GenericAll')
                         accesscontroltype                  = 'Allow'
                         activeDirectorysecurityinheritance = 'All'
@@ -1777,7 +1789,7 @@ Describe "New-TierModelOuAcl - Success Path Coverage" -Tag "Unit", "OuAcl" {
                         Action = 'CreateAcl'
                         Path   = 'OU=Tier0,DC=test,DC=local'
                         Data   = [PSCustomObject]@{
-                            identityreference                  = 'BUILTIN\Administrators'
+                            identityreference                  = $script:BuiltinAdministratorsName
                             activedirectoryrights              = @('GenericAll')
                             accesscontroltype                  = 'Allow'
                             activeDirectorysecurityinheritance = 'All'
@@ -1788,7 +1800,7 @@ Describe "New-TierModelOuAcl - Success Path Coverage" -Tag "Unit", "OuAcl" {
                         Action = 'CreateAcl'
                         Path   = 'OU=Tier1,DC=test,DC=local'
                         Data   = [PSCustomObject]@{
-                            identityreference                  = 'BUILTIN\Users'
+                            identityreference                  = $script:BuiltinUsersName
                             activedirectoryrights              = @('ReadProperty')
                             accesscontroltype                  = 'Allow'
                             activeDirectorysecurityinheritance = 'All'
@@ -1808,7 +1820,7 @@ Describe "New-TierModelOuAcl - Success Path Coverage" -Tag "Unit", "OuAcl" {
                     Action = 'CreateAcl'
                     Path   = 'OU=Tier0,DC=test,DC=local'
                     Data   = [PSCustomObject]@{
-                        identityreference                  = 'BUILTIN\Administrators'
+                        identityreference                  = $script:BuiltinAdministratorsName
                         activedirectoryrights              = @('ReadProperty', 'WriteProperty')
                         accesscontroltype                  = 'Allow'
                         activeDirectorysecurityinheritance = 'All'
@@ -1827,7 +1839,7 @@ Describe "New-TierModelOuAcl - Success Path Coverage" -Tag "Unit", "OuAcl" {
                     Action = 'CreateAcl'
                     Path   = 'OU=Tier0,DC=test,DC=local'
                     Data   = [PSCustomObject]@{
-                        identityreference                  = 'BUILTIN\Administrators'
+                        identityreference                  = $script:BuiltinAdministratorsName
                         activedirectoryrights              = @('GenericAll', 'NOT_A_VALID_RIGHT')
                         accesscontroltype                  = 'Allow'
                         activeDirectorysecurityinheritance = 'All'
@@ -1847,7 +1859,7 @@ Describe "New-TierModelOuAcl - Success Path Coverage" -Tag "Unit", "OuAcl" {
                     Action = 'CreateAcl'
                     Path   = 'CN=NoOuHere,DC=test,DC=local'
                     Data   = [PSCustomObject]@{
-                        identityreference                  = 'BUILTIN\Administrators'
+                        identityreference                  = $script:BuiltinAdministratorsName
                         activedirectoryrights              = @('GenericAll')
                         accesscontroltype                  = 'Allow'
                         activeDirectorysecurityinheritance = 'All'
@@ -1878,7 +1890,7 @@ Describe "New-TierModelOuAcl - Success Path Coverage" -Tag "Unit", "OuAcl" {
                     Action = 'CreateAcl'
                     Path   = 'OU=Tier0,DC=test,DC=local'
                     Data   = [PSCustomObject]@{
-                        identityreference                  = 'BUILTIN\Administrators'
+                        identityreference                  = $script:BuiltinAdministratorsName
                         activedirectoryrights              = @('GenericAll')
                         accesscontroltype                  = 'Allow'
                         activeDirectorysecurityinheritance = 'All'
@@ -1899,7 +1911,7 @@ Describe "New-TierModelOuAcl - Success Path Coverage" -Tag "Unit", "OuAcl" {
                     Action = 'CreateAcl'
                     Path   = 'OU=Tier0,DC=test,DC=local'
                     Data   = [PSCustomObject]@{
-                        identityreference                  = 'BUILTIN\Administrators'
+                        identityreference                  = $script:BuiltinAdministratorsName
                         activedirectoryrights              = @('GenericAll')
                         accesscontroltype                  = 'Allow'
                         activeDirectorysecurityinheritance = 'All'
@@ -1919,7 +1931,7 @@ Describe "New-TierModelOuAcl - Success Path Coverage" -Tag "Unit", "OuAcl" {
                     Action = 'CreateAcl'
                     Path   = 'OU=Tier0,DC=test,DC=local'
                     Data   = [PSCustomObject]@{
-                        identityreference                  = 'BUILTIN\Administrators'
+                        identityreference                  = $script:BuiltinAdministratorsName
                         activedirectoryrights              = @('GenericAll')
                         accesscontroltype                  = 'Allow'
                         activeDirectorysecurityinheritance = 'All'
@@ -1940,7 +1952,7 @@ Describe "New-TierModelOuAcl - Success Path Coverage" -Tag "Unit", "OuAcl" {
                     Action = 'CreateAcl'
                     Path   = 'OU=Tier0,DC=test,DC=local'
                     Data   = [PSCustomObject]@{
-                        identityreference                  = 'BUILTIN\Administrators'
+                        identityreference                  = $script:BuiltinAdministratorsName
                         activedirectoryrights              = @('GenericAll')
                         accesscontroltype                  = 'Allow'
                         activeDirectorysecurityinheritance = 'All'
@@ -1960,7 +1972,7 @@ Describe "New-TierModelOuAcl - Success Path Coverage" -Tag "Unit", "OuAcl" {
                     Action = 'CreateAcl'
                     Path   = 'OU=Tier0,DC=test,DC=local'
                     Data   = [PSCustomObject]@{
-                        identityreference                  = 'BUILTIN\Administrators'
+                        identityreference                  = $script:BuiltinAdministratorsName
                         activedirectoryrights              = @('GenericAll')
                         accesscontroltype                  = 'Allow'
                         activeDirectorysecurityinheritance = 'All'
@@ -1991,7 +2003,7 @@ Describe "New-TierModelOuAcl - Success Path Coverage" -Tag "Unit", "OuAcl" {
                     Action = 'CreateAcl'
                     Path   = 'OU=Tier0,DC=test,DC=local'
                     Data   = [PSCustomObject]@{
-                        identityreference                  = 'BUILTIN\Administrators'
+                        identityreference                  = $script:BuiltinAdministratorsName
                         activedirectoryrights              = @('GenericAll')
                         accesscontroltype                  = 'Allow'
                         activeDirectorysecurityinheritance = 'Descendents'
@@ -2014,7 +2026,7 @@ Describe "New-TierModelOuAcl - Success Path Coverage" -Tag "Unit", "OuAcl" {
                     Action = 'CreateAcl'
                     Path   = 'OU=Tier0,DC=test,DC=local'
                     Data   = [PSCustomObject]@{
-                        identityreference                  = 'BUILTIN\Administrators'
+                        identityreference                  = $script:BuiltinAdministratorsName
                         activedirectoryrights              = @('GenericAll')
                         accesscontroltype                  = 'Allow'
                         activeDirectorysecurityinheritance = 'Descendents'

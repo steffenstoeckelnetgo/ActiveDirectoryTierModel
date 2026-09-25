@@ -14,6 +14,13 @@ Describe "gMSA ACL Operations" -Tag "Unit", "GmsaAcl" {
         $ModulePath = Resolve-Path "$PSScriptRoot\..\Modules\TierModel"
         Import-Module $ModulePath -Force
 
+        . "$PSScriptRoot\helpers\LocalizedPrincipals.ps1"
+
+        # Built-in principals are localized: these fixtures hold the invariant SID and ask
+        # THIS host what it calls it, because the code under test resolves the value with
+        # NTAccount(...).Translate(). See the note in helpers/LocalizedPrincipals.ps1.
+        $script:BuiltinAdministratorsName = Get-TestPrincipalName -Sid 'S-1-5-32-544'  # Administrators
+
         $script:TestCorrelationId = [System.Guid]::NewGuid().ToString()
         $script:TestDC = "DC01.test.local"
         $script:TestDomainDN = "DC=test,DC=local"
@@ -929,7 +936,7 @@ Describe "gMSA ACL Operations" -Tag "Unit", "GmsaAcl" {
                     Action = 'CreateAcl'
                     Path = 'OU=Tier 1 Service Accounts,OU=Tier 1,OU=Tier Model Administration,DC=test,DC=local'
                     Data = [PSCustomObject]@{
-                        identityreference = 'BUILTIN\Administrators'
+                        identityreference = $script:BuiltinAdministratorsName
                         activedirectoryrights = @('GenericAll')
                         accesscontroltype = 'Allow'
                         activeDirectorysecurityinheritance = 'All'
@@ -952,7 +959,7 @@ Describe "gMSA ACL Operations" -Tag "Unit", "GmsaAcl" {
                     Action = 'CreateAcl'
                     Path = 'OU=Tier 1 Service Accounts,OU=Tier 1,OU=Tier Model Administration,DC=test,DC=local'
                     Data = [PSCustomObject]@{
-                        identityreference = 'BUILTIN\Administrators'
+                        identityreference = $script:BuiltinAdministratorsName
                         activedirectoryrights = @('GenericAll')
                         accesscontroltype = 'Allow'
                         activeDirectorysecurityinheritance = 'Descendents'
@@ -975,7 +982,7 @@ Describe "gMSA ACL Operations" -Tag "Unit", "GmsaAcl" {
                         Action = 'CreateAcl'
                         Path = 'OU=Tier 1 Service Accounts,OU=Tier 1,OU=Tier Model Administration,DC=test,DC=local'
                         Data = [PSCustomObject]@{
-                            identityreference = 'BUILTIN\Administrators'
+                            identityreference = $script:BuiltinAdministratorsName
                             activedirectoryrights = @('CreateChild')
                             accesscontroltype = 'Allow'
                             activeDirectorysecurityinheritance = 'All'
@@ -1001,7 +1008,7 @@ Describe "gMSA ACL Operations" -Tag "Unit", "GmsaAcl" {
                         Action = 'CreateAcl'
                         Path = 'OU=Tier 1 Service Accounts,OU=Tier 1,OU=Tier Model Administration,DC=test,DC=local'
                         Data = [PSCustomObject]@{
-                            identityreference = 'BUILTIN\Administrators'
+                            identityreference = $script:BuiltinAdministratorsName
                             activedirectoryrights = @('GenericAll')
                             accesscontroltype = 'Allow'
                             activeDirectorysecurityinheritance = 'Descendents'
@@ -1026,7 +1033,7 @@ Describe "gMSA ACL Operations" -Tag "Unit", "GmsaAcl" {
                     Action = 'CreateAcl'
                     Path = 'CN=Service Accounts,DC=test,DC=local'
                     Data = [PSCustomObject]@{
-                        identityreference = 'BUILTIN\Administrators'
+                        identityreference = $script:BuiltinAdministratorsName
                         activedirectoryrights = @('GenericAll', 'NotARealRight')
                         accesscontroltype = 'Allow'
                         activeDirectorysecurityinheritance = 'All'
@@ -1049,7 +1056,7 @@ Describe "gMSA ACL Operations" -Tag "Unit", "GmsaAcl" {
                     Action = 'CreateAcl'
                     Path = 'OU=Tier 1 Service Accounts,OU=Tier 1,OU=Tier Model Administration,DC=test,DC=local'
                     Data = [PSCustomObject]@{
-                        identityreference = 'BUILTIN\Administrators'
+                        identityreference = $script:BuiltinAdministratorsName
                         activedirectoryrights = @('GenericAll')
                         accesscontroltype = 'Allow'
                         activeDirectorysecurityinheritance = 'Descendents'
@@ -1072,7 +1079,7 @@ Describe "gMSA ACL Operations" -Tag "Unit", "GmsaAcl" {
                     Action = 'CreateAcl'
                     Path = 'OU=Tier 1 Service Accounts,OU=Tier 1,OU=Tier Model Administration,DC=test,DC=local'
                     Data = [PSCustomObject]@{
-                        identityreference = 'BUILTIN\Administrators'
+                        identityreference = $script:BuiltinAdministratorsName
                         activedirectoryrights = @('CreateChild')
                         accesscontroltype = 'Allow'
                         activeDirectorysecurityinheritance = 'All'
