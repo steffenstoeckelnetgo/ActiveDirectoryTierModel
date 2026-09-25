@@ -47,6 +47,10 @@ To get started with TierModel, please refer to our comprehensive documentation:
 **Current test status: 2,056 passing / 32 known failures** — measured on **German Windows 11
 against a German Active Directory**, 2026-09-16, commit `5ebe784`.
 
+> **This figure now understates.** 31 of those 32 failures were fixed on 2026-09-25 (`33e4e11`)
+> and measured green on a German host; the whole suite was not re-run that day, so the total is
+> left as it was measured rather than recalculated. See *About the 32 failures* below.
+
 | Measure | Value | Measured on |
 |---|---|---|
 | **Automated tests** | **2,056 passing of 2,088** | German Windows 11 / PowerShell 7.6.6, Pester 5.9.0, 2026-09-16 |
@@ -55,13 +59,30 @@ against a German Active Directory**, 2026-09-16, commit `5ebe784`.
 | **Test files** | 36 Pester files (29 unit, 7 integration) + 1 Excel workbook | counted on `main` |
 | **Exported functions** | 80 files in `modules/TierModel/public/` + 3 defined inline in `TierModel.psm1` = **83** | counted on `main` |
 
-**About the 32 failures.** They are host-language artefacts in the **test fixtures**, not product
-defects, and CI never sees them because CI runs English. 31 hard-code principal names
-(`BUILTIN\Administrators`, `BUILTIN\Users`, `Everyone`) that German Windows cannot translate, so
-`NTAccount(...).Translate()` throws and the code under test takes a path the test did not intend.
-The 32nd reads Domain Admin membership from the caller's real logon token — deliberately, so a
-string-typed SID cannot fake it — and therefore fails precisely *because* the lab session is a
-Domain Admin. Both classes are tracked in `CLAUDE.md`; repairing the 31 is its own change.
+**About the 32 failures — 31 are fixed, 1 stays.** They were host-language artefacts in the **test
+fixtures**, not product defects, and CI never saw them because CI runs English. 31 of them came
+from hard-coded principal names — 34 sites across five files, naming `BUILTIN\Administrators`,
+`BUILTIN\Users` and `Everyone` — that German Windows cannot translate, so
+`NTAccount(...).Translate()` threw and the code under test took a path the test did not intend.
+
+Those 31 were repaired on **2026-09-25** (`33e4e11`) as their own change: the fixtures now hold the
+invariant SID and ask the running host what it calls it, so the same test reads
+`BUILTIN\Administrators` on an English host and `VORDEFINIERT\Administratoren` on a German one.
+Measured on both, five files, 311 tests:
+
+| Host | Install language | Before | After |
+|---|---|---|---|
+| German | `0407` | 280 of 311 | **311 of 311** |
+| English | `0409` | 311 of 311 | **311 of 311**, unchanged |
+
+The English run is the control, not a formality: on an English host those literals always
+resolved, so fixtures that had quietly stopped asserting anything would look exactly like success.
+Unchanged before and after is what rules that out.
+
+The 32nd stays. It reads Domain Admin membership from the caller's real logon token —
+deliberately, so a string-typed SID cannot fake it — and therefore fails precisely *because* the
+lab session is a Domain Admin. Making it pass on such a host would mean weakening that check.
+`CLAUDE.md` §6 carries both records.
 
 **About the coverage figure.** It was 87.63% on 2026-09-08 and is 85.73% now. The localization work
 added code faster than tests reached it: the analysed population grew by **476 commands**

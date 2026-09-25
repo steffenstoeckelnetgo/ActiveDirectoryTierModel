@@ -8,6 +8,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Verified
+- **The 31 ACL tests execute on a German host, 2026-09-25, commit `33e4e11`.** They carried
+  hard-coded principal names (`BUILTIN\Administrators`, `BUILTIN\Users`, `Everyone`) that German
+  Windows cannot translate, so `NTAccount(...).Translate()` threw and the code under test took a
+  path the test did not intend — leaving ACL behaviour, the security-relevant part, unverified on
+  the platform this fork exists for. The fixtures now hold the invariant SID and ask the running
+  host what it calls it. Measured on both lab hosts, five files, 311 tests: on the German host
+  (install language `0407`) **280 of 311 before, 311 of 311 after**; on the English host
+  (`0409`) **311 of 311 before and after**. Both halves were required — the German run is the
+  point, the English run is the control, because on an English host those literals always resolved
+  and fixtures that had quietly stopped asserting anything would look identical to success. The
+  discriminating variable is the operating system's **install language**, not the user's culture:
+  both hosts ran `de-DE`. The round-trip guard in `tests/helpers/LocalizedPrincipals.ps1`, which
+  throws when a rendered name does not translate back to the SID it came from, never fired across
+  four SIDs and two host languages. **Tests only — no product code and no configuration changed**;
+  the real `config/` only ever names Tier Model groups in `identityreference`, which are
+  language-independent by construction. The 32nd known failure stays: `Unit.Prerequisites` reads
+  Domain Admin membership from the real logon token on purpose, so it fails precisely because the
+  lab session is a Domain Admin, and making it pass there would weaken that check. No whole-suite
+  total was measured that day, so `README.md` and `docs/test-coverage.md` keep their 2026-09-16
+  figure with a note that it understates by these 31 rather than deriving a new one.
 - **Parity proven on two live domains, 2026-09-24, commit `ce528e4`.** One localized and one
   English domain, independently built, both forest root and single-DC `Windows2025Domain`,
   distinguished by their domain SIDs (`…-2230522700-2543936044-3532250090` and

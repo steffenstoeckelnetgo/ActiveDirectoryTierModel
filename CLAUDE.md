@@ -46,12 +46,13 @@ only the rendered names differ. That is the claim this whole fork rests on, and 
 rather than argued — §6 item 6, Phase F, carries both domain SIDs and the figures.
 
 The per-phase headline below is the green-field German cycle (`int.promiseIT.de`, German
-Windows 11 / PowerShell 7.6.6, 2026-09-16); §6 item 1 carries the authoritative tables. The
-English side reproduced every one of these numbers on 2026-09-24.
+Windows 11 / PowerShell 7.6.6, 2026-09-16); the authoritative tables are in §6's *final* numbered
+list, item 1 — not in *Start here* item 1, which is the ACL fixture work. The English side
+reproduced every one of these numbers on 2026-09-24.
 
 | Phase | Result |
 |---|---|
-| Test suite, Windows | **2056 passed of 2088** — the 32 failures are pre-existing, classified in §6 item 2 |
+| Test suite, Windows | **2056 passed of 2088** — the 32 failures were pre-existing, classified in §6 item 2. 31 of them are fixed since 2026-09-25 (§6 *Start here* item 1), so this figure now understates by that much; it is left as measured rather than re-derived |
 | Plan | 719 actions |
 | Deploy | **`Applied: 689, Skipped: 0, Errors: 0`** |
 | Idempotency, second run | `Applied: 0, Errors: 0, Converged: True` |
@@ -59,13 +60,17 @@ English side reproduced every one of these numbers on 2026-09-24.
 | Localization report | 56 principals, 0 unresolved, 42 of them carrying a German directory name; **`No problems found.`** |
 
 **What is still open.** The code is merged, the three CI gates are measured (coverage included,
-§6 item 4) and parity is proven. What is *not* established is the standard the repository owner
-set on 2026-09-17:
+§6 item 4) and parity is proven. What is *not* yet fully established is the standard the
+repository owner set on 2026-09-17:
 **the product must be demonstrably correct on a German Active Directory, at every change, not once
-by observation.** The lab cycle meets it for one domain; the suite does not yet meet it at all,
-because 31 of its ACL tests cannot execute on a German host. §6 *Start here* has the ordered work.
-**Do not tag a release until that list is closed** — the repository carries no tags yet, so the
-first one should mean something.
+by observation.** The lab cycle meets it for one domain. The suite met none of it for ACLs until
+2026-09-25, when the 31 ACL tests that could not execute on a German host were brought onto
+host-resolved principal names and measured green there (§6 *Start here* item 1, merged as
+`33e4e11`). What is still missing is the *resolution* half — no test asserts that every principal
+the real `config/` names resolves by a defined path, or that German and English fixtures produce
+identical SID sets; that is §6 *Start here* item 2, and it is the last thing between here and a
+tag. **Do not tag a release until that list is closed** — the repository carries no tags yet, so
+the first one should mean something.
 
 ---
 
@@ -240,10 +245,27 @@ Run: `.\tests\Invoke-AllTests.ps1` (`-TestType Unit|Integration`, `-FailedOnly`,
    `'NT AUTHORITY\SELF'` and `'Everyone'` cannot be translated on German Windows — the accounts
    read `VORDEFINIERT\Administratoren`, `NT-AUTORITÄT\SELBST` and `Jeder` there — so
    `NTAccount(...).Translate()` throws and the code under test takes a path the test did not
-   intend. Write the SID (`'S-1-5-10'`, `'S-1-5-32-544'`) into the fixture, or derive the name
-   from the SID at run time. Comments in the suite claiming these names *"resolve on any Windows
-   machine"* are wrong; **31 tests fail on German Windows for exactly this reason** (§6) — 28
-   through `NTAccount(...).Translate()` and 3 through an assertion on the rendered name.
+   intend. Comments in the suite claiming these names *"resolve on any Windows machine"* were
+   wrong; **31 tests failed on German Windows for exactly this reason** — 28 through
+   `NTAccount(...).Translate()` and 3 through an assertion on the rendered name. All 31 are fixed
+   since 2026-09-25 (§6 *Start here* item 1, `33e4e11`). Literals of this shape still occur
+   elsewhere in the suite — 17 of them across six files, measured on `33e4e11` — and none of
+   those files fails on a German host today, because there the literal is an *expected* value or
+   sits in a mock nothing translates. Do not read that as "these are fine": each is this trap
+   waiting for the read path to change. Check what reads the fixture before adding another.
+
+   **There are two routes and they are not interchangeable — picking the wrong one costs a lab
+   cycle.** Write the SID into the fixture *only* where the fixture is read by product code that
+   accepts a SID string: `ConvertTo-TierModelIdentitySid` returns one unchanged
+   (`Resolve-TierModelPrincipalSid.ps1:506`), which is why `4c84f4a` could put `'S-1-5-10'` into
+   eight mocked `Get-Acl` fixtures. Where the fixture reaches a **real** cmdlet that constructs
+   `New-Object System.Security.Principal.NTAccount($value)` and calls `.Translate(...)` — as
+   `New-TierModelOuAcl.ps1:82-83` does with `Plan.Actions[].Data.identityreference` — a SID
+   literal throws too, because `NTAccount` takes a *name* and no account is called
+   `S-1-5-32-544`. There, **derive the name from the SID at run time**:
+   `Get-TestPrincipalName -Sid 'S-1-5-32-544'` in `tests/helpers/LocalizedPrincipals.ps1`, which
+   translates and then round-trips the result back to the SID and throws if it does not match —
+   a fixture resolving to the *wrong* principal would otherwise leave every test using it green.
 8. **`IsDomainAdmin` cannot be mocked.** `Test-TierModelPrerequisites` reads it from the caller's
    own logon token (`[WindowsIdentity]::GetCurrent()`), deliberately, so that a string-typed SID
    from the compatibility shim cannot fake membership. On a host where the session really *is* a
@@ -410,7 +432,8 @@ legitimately have none. Use `ContainsKey`.
 
 ### The one thing the green-field run exposed: `Converged` mixed two meanings
 
-The verification run on a **freshly built** `int.promiseIT.de` (2026-09-16, §6 item 1) ended
+The verification run on a **freshly built** `int.promiseIT.de` (2026-09-16, §6's final list,
+item 1) ended
 `Applied: 689, Errors: 0, Converged: False`. Counted out of `DE-neu-C-091626-1349.log`, exactly
 two results reported `Converged: false`, both with `ErrorCount: 0` — `OuCreateComplete`
 (`AppliedCount: 31`) and `GroupCreateComplete` (`AppliedCount: 29`). No third.
@@ -447,12 +470,13 @@ unverified is the *deployment*, not the resolver: see §6 item 5 and
 
 ## 6. Next steps
 
-### Start here — state of `main`, 2026-09-17
+### Start here — state of `main`, 2026-09-25
 
 The localization work is **merged** (PR #1) and all three CI gates are measured: suite
-**2056 of 2088** on a German host, PSScriptAnalyzer **0 findings / 0 errors**, coverage
-**85.73 %** against the CI population (item 4). Work happens on `main` directly (§0). The
-repository carries **no tags**, so nothing has been released.
+**2056 of 2088** on a German host (2026-09-16, and now known to understate by the 31 of item 1),
+PSScriptAnalyzer **0 findings / 0 errors**, coverage **85.73 %** against the CI population
+(item 4). Work happens on `main` directly (§0). The repository carries **no tags**, so nothing has
+been released.
 
 **The standard the repository owner set on 2026-09-17, and the reason this list exists:**
 
@@ -463,66 +487,106 @@ Two numbers get confused here, so both are written down. **Coverage is not a pas
 says that share of commands was executed by some test at least once; it says nothing about
 correctness. The functional evidence is separate, and on the one domain measured it is complete —
 deploy 689/689 with 0 errors, second run 0 actions, audit **433 of 433** with 0 drift, principals
-**56 of 56** resolved, OU ACLs 105/105, GPOs 146/146 (§6 item 1). What the standard above is
-missing is not that evidence. It is that **the suite cannot reproduce it**, and that it rests on a
-single domain.
+**56 of 56** resolved, OU ACLs 105/105, GPOs 146/146 (§6's final list, item 1). What the standard
+above is missing is not that evidence. It is that **the suite could not reproduce it**, and that
+it rests on a single domain.
 
-**Do not tag a release until items 1–3 below are closed.**
+**Item 1 closed that first half on 2026-09-25**: the 31 ACL tests execute on a German host, so the
+suite now carries the ACL evidence rather than the lab alone. What is left is item 2 — the
+principal-completeness tests, which are what make the *resolution* claim a standing guarantee
+instead of one measured report — and item 3, a security question that is two read-only commands
+away from an answer.
+
+**Do not tag a release until items 2 and 3 below are closed.**
 
 #### The work, ordered
 
-**1. Bring 31 ACL tests onto SIDs so they execute on a German host.** *Tests only, no product
-code.* Branch: `fix/localized-acl-test-fixtures`. This is the gap that matters most: `Unit.OuAclOperations`, `Unit.MsaAclOperations`,
-`Unit.GmsaAclOperations`, `Unit.DmsaAclOperations` and `Unit.CanonicalAcl` carry **34 hard-coded
+**~~1. Bring 31 ACL tests onto SIDs so they execute on a German host.~~ Done, 2026-09-25, merged
+as `33e4e11` ([PR #5](https://github.com/steffenstoeckelnetgo/ActiveDirectoryTierModel/pull/5)).**
+*Tests only, no product code.* `Unit.OuAclOperations`, `Unit.MsaAclOperations`,
+`Unit.GmsaAclOperations`, `Unit.DmsaAclOperations` and `Unit.CanonicalAcl` carried **34 hard-coded
 principal names** between them (`'BUILTIN\Administrators'`, `'BUILTIN\Users'`, `'Everyone'`).
 German Windows cannot translate those, `NTAccount(...).Translate()` throws, and the code under
-test takes a path the test did not intend (§4 trap 7). The effect: **ACL behaviour — the
-security-relevant part — is currently not verified on the platform this project exists for.**
+test took a path the test did not intend (§4 trap 7) — so ACL behaviour, the security-relevant
+part, was not verified on the platform this project exists for. It is now.
+
+| Host | Install language | Revision | Result |
+|---|---|---|---|
+| `DC1` | `0407` | `main` @ `d4be5e3` | **280 of 311** — the 31, broken down per file in §6's final list, item 2 |
+| `DC1` | `0407` | `fix/localized-acl-test-fixtures` @ `6e8a213` | **311 of 311** |
+| `SERVER` | `0409` | `main` @ `d4be5e3` | **311 of 311** |
+| `SERVER` | `0409` | `fix/localized-acl-test-fixtures` @ `6e8a213` | **311 of 311**, unchanged |
+
+Per file after the change, identical on both hosts: `Unit.OuAclOperations` 103,
+`Unit.MsaAclOperations` 65, `Unit.GmsaAclOperations` 62, `Unit.DmsaAclOperations` 59,
+`Unit.CanonicalAcl` 22.
+
+**Both halves were required and both were run.** The German run is the point. The English run is
+the control: on an English host the old literals resolve, so the file was already green there —
+had the fixtures simply gone vacuous, that would look identical. `311 of 311` before *and* after
+on `SERVER` is what excludes it.
+
+**The discriminating variable is the install language, not the culture.** Both hosts ran culture
+`de-DE`; only `InstallLanguage` differed, `0407` against `0409`. That is the correct line to draw:
+`NTAccount.Translate()` renders built-in principals in the **operating system's install
+language**, not in the user's culture, so the English run changed exactly one thing. Read a lab
+host's `HKLM:\SYSTEM\CurrentControlSet\Control\Nls\Language\InstallLanguage`, not `Get-Culture`,
+when you need to know which case you are in.
 
 > **This item used to say the fix was "mechanical and the pattern is proven" — replace the name
 > with the SID, as commit `4c84f4a` did for 8 WinLAPS tests. That was checked against the code on
-> 2026-09-25 and it is wrong: it holds for 3 of the 34 sites and fails for the other 31.** The two
-> cases look identical and are not. In the WinLAPS fixtures the literal sat in a **mocked**
-> `Get-Acl` and was read back through `ConvertTo-TierModelIdentitySid`, which returns a SID string
-> unchanged (`Resolve-TierModelPrincipalSid.ps1:506`). In these four files the literal is
+> 2026-09-25 and it is wrong: it holds for 3 of the 34 sites and fails for the other 31.** The
+> record stays because the two cases look identical and are not, and the next reader will meet
+> them again. In the WinLAPS fixtures the literal sat in a **mocked** `Get-Acl` and was read back
+> through `ConvertTo-TierModelIdentitySid`, which returns a SID string unchanged
+> (`Resolve-TierModelPrincipalSid.ps1:506`). In these four files the literal is
 > `Plan.Actions[].Data.identityreference` and reaches the **real, unmocked** cmdlet, which does
 > `New-Object System.Security.Principal.NTAccount($identityReference)` then `.Translate(...)`
 > (`New-TierModelOuAcl.ps1:82-83`). `NTAccount` takes a **name**: given `'S-1-5-32-544'` it looks
-> for an account literally called that, finds none, and throws. The test would still fail, for a
-> new reason. Anyone repeating the "proven pattern" here loses a lab cycle finding that out.
+> for an account literally called that, finds none, and throws. The test would still have failed,
+> for a new reason.
 
-The workable route is the *other* one §4 trap 7 allows: **the fixture holds the invariant SID and
-asks the host what it calls it** at run time —
+**What was done instead** is the *other* route §4 trap 7 allows: the fixture holds the invariant
+SID and asks the host what it calls it, through `Get-TestPrincipalName` in the new
+`tests/helpers/LocalizedPrincipals.ps1`. There,
 `([SecurityIdentifier]'S-1-5-32-544').Translate([NTAccount]).Value` yields
 `BUILTIN\Administrators` on an English host and `VORDEFINIERT\Administratoren` on a German one,
-and the product translates either back to the same SID. No product code changes: the real
+and the product translates either back to the same SID. No product code changed: the real
 `config/` only ever names Tier Model groups in `identityreference`, which are language-independent
-by construction, so the product was never the broken part.
+by construction, so the product was never the broken part — the tests had simply chosen built-ins
+as fixtures.
 
-`Unit.CanonicalAcl` is a separate case inside the same item. Its fixtures already carry SIDs; its
-3 failures are the **assertion** `Should -Match 'Everyone|S-1-1-0'`.
+**The anti-vacuity guard is in the helper, and it stayed silent.** `Get-TestPrincipalName`
+round-trips the rendered name back to the SID it came from and throws, naming the SID, when it
+does not match. It sits there rather than in a test on purpose: a fixture that silently resolved
+to a *different* principal would leave every test using it green. Across four SIDs and two host
+languages it never fired — that silence is the evidence the fixtures still name what they claim
+to, and it is why the English control run means something.
+
+`Unit.CanonicalAcl` was a separate case inside the same item. Its fixtures already carried SIDs;
+its 3 failures were the **assertion** `Should -Match 'Everyone|S-1-1-0'`.
 `Test-TierModelCanonicalAcl.ps1:117-121` translates the SID to a name and falls back to the SID
 string *only when translation throws* — `S-1-1-0` always translates, so on a German host the value
-is `Jeder`. Adding literals is chasing; the assertion has to stop depending on a guessed form.
+is `Jeder` and matched neither alternative. The three are now exact against the rendered name,
+which also brings them onto the guard-test house style (§4 trap 6).
 
-*Verification, both halves required:* the change must be **red without it** (so a fixture is not
-quietly made vacuous), and it must be measured on a German host **and** an English one — the
-German run is the point, the English run is what proves the fixtures did not go vacuous. The five
-files hold 311 tests; the target is **280 → 311 of 311** on German and **311 of 311 unchanged** on
-English. Nothing in those files can be verified on Linux: all five report 0 of 311 there, before
-and after, because `[SecurityIdentifier]` cannot be constructed from a string on that platform.
+*No suite total was measured on the day, deliberately.* Owner's decision, 2026-09-25: the
+acceptance this item defines is the **+31 in these five files**, and that is what is recorded. A
+whole-suite figure must be *measured*, never derived — this item once said "2056 to 2087", which
+came from `5ebe784`, while the English host had already discovered 2111 at `ce528e4` before PR #3
+added 17 more. `README.md` and `docs/test-coverage.md` therefore keep their `2026-09-16` suite
+line with a note that it is now known to understate by these 31. A German
+`pwsh -NonInteractive -File .\tests\Invoke-AllTests.ps1` on `main` refreshes it whenever it is
+worth a run.
 
-*Do not carry a suite total into the acceptance record from here.* This item used to say "2056 to
-2087"; that came from `5ebe784`, and the English host already discovered 2111 at `ce528e4` before
-PR #3 added 17 more. Record the **+31 in these five files** plus whatever the whole suite measures
-on the day.
-
-*The 32nd failure stays.* `Unit.Prerequisites` is not a fixture problem:
-`Test-TierModelPrerequisites` reads `IsDomainAdmin` from the real logon token on purpose, so a
-string-typed SID cannot fake membership (§4 trap 8) — it fails precisely **because the lab session
-is a Domain Admin**. Making it pass on a DA host means weakening exactly that check, which is rule
-2.2 territory. Owner's decision, 2026-09-25: leave it, and write the difference into the record
-rather than hiding it.
+*The 32nd failure stays, and it is not a language difference at all.* `Unit.Prerequisites` is not
+a fixture problem: `Test-TierModelPrerequisites` reads `IsDomainAdmin` from the real logon token
+on purpose, so a string-typed SID cannot fake membership (§4 trap 8) — it fails precisely
+**because the lab session is a Domain Admin**, which is why it is the single failure in the
+English host's `2110 of 2111` as well. Making it pass on a DA host means weakening exactly that
+check, which is rule 2.2 territory. Owner's decision, 2026-09-25: leave it, and write it into the
+record rather than hiding it. It is outside the five files above and does not appear in their
+311.
 
 **2. Write the completeness tests** (designed in `specs/008-german-language-support/plan.md`
 phase D, never written). Branch: `test/principal-completeness` — a separate branch and a separate
@@ -570,8 +634,12 @@ false differences from domain-allocated RIDs (`ef972d5`, `292d9b7`), and
   measured numbers and their host: suite **2,056 of 2,088** on German Windows, coverage
   **85.73 % (14,742 / 17,195)** from the German lab host, owner-confirmed. Both files now say what
   was measured on what, and both record that the figures predate the 18 tests added with the
-  parity comparison rather than deriving a newer total by arithmetic. When item 1 lands, the suite
-  line is the one to update.
+  parity comparison rather than deriving a newer total by arithmetic. **Item 1 landed on
+  2026-09-25 and the suite line was deliberately not recalculated**: no whole-suite run was made
+  that day, and a total that is derived rather than measured is exactly what this bullet exists to
+  prevent. Both files now carry a note that the figure understates by the 31 ACL tests. One German
+  `pwsh -NonInteractive -File .\tests\Invoke-AllTests.ps1` on `main` replaces the note with a
+  number.
 - **`New-TierModelGroup` with an empty plan** raises `GroupApplyFailed`: `$Plan.Actions |
   Where-Object` collapses to `$null` and `.Count` throws under `Set-StrictMode`. Pre-existing, its
   own concern, own issue.
@@ -581,7 +649,7 @@ false differences from domain-allocated RIDs (`ef972d5`, `292d9b7`), and
 
 ---
 
-Ordered. Items 1–3 are the actual acceptance gate.
+Ordered. Items 1–3 were the acceptance gate for the localization work itself; all three are done.
 
 1. ~~**Run the suite on Windows.**~~ **Done, twice.** German Windows 11 / PowerShell 7.6.6
    against a German domain, as a Domain Admin. First run: 2012 passed of 2053, 41 failed.
@@ -618,14 +686,20 @@ Ordered. Items 1–3 are the actual acceptance gate.
    not this change. (`main` now *carries* the localization work, so re-checking that baseline
    today means checking out a commit before PR #1, not `main`.):
 
-   | File | × | Cause |
-   |---|--:|---|
-   | `Unit.OuAclOperations` | 10 | fixture `'BUILTIN\Administrators'` / `'BUILTIN\Users'` — untranslatable on German Windows (§4 trap 7) |
-   | `Unit.MsaAclOperations` | 7 | same |
-   | `Unit.GmsaAclOperations` | 7 | same |
-   | `Unit.DmsaAclOperations` | 4 | same |
-   | `Unit.CanonicalAcl` | 3 | `Should -Match 'Everyone\|S-1-1-0'` against the directory's `Jeder` |
-   | `Unit.Prerequisites` | 1 | `IsDomainAdmin` comes from the real logon token (§4 trap 8) |
+   | File | × | Cause | Since |
+   |---|--:|---|---|
+   | `Unit.OuAclOperations` | 10 | fixture `'BUILTIN\Administrators'` / `'BUILTIN\Users'` — untranslatable on German Windows (§4 trap 7) | **fixed `33e4e11`** |
+   | `Unit.MsaAclOperations` | 7 | same | **fixed `33e4e11`** |
+   | `Unit.GmsaAclOperations` | 7 | same | **fixed `33e4e11`** |
+   | `Unit.DmsaAclOperations` | 4 | same | **fixed `33e4e11`** |
+   | `Unit.CanonicalAcl` | 3 | `Should -Match 'Everyone\|S-1-1-0'` against the directory's `Jeder` | **fixed `33e4e11`** |
+   | `Unit.Prerequisites` | 1 | `IsDomainAdmin` comes from the real logon token (§4 trap 8) | **open, and staying open** |
+
+   **31 of the 32 are fixed as of 2026-09-25** — §6 *Start here* item 1 carries the measurement,
+   on both a German and an English host. The table is kept whole rather than trimmed: it is the
+   measured history, and the one row still standing is only legible next to the rows that went.
+   That row stays by the owner's decision of the same day, because making it pass on a Domain
+   Admin host means weakening the very check it covers (rule 2.2).
 
    The 41st, *"ByBytes does not require -PreferredDc"*, is not in that table because it is not a
    property of the host at all: it asserts that a missing mandatory `-PreferredDc` raises a
@@ -634,8 +708,9 @@ Ordered. Items 1–3 are the actual acceptance gate.
    .\tests\Invoke-AllTests.ps1` — that is what CI does, and the test passes. (At the prompt,
    an empty line also produces a binding error and passes; a typed DC name does not.)
 
-   **Fixing the other 32 is a separate concern** (CONTRIBUTING: one concern per PR) and needs its
-   own issue. They are invisible to CI, which runs English — which is why they survived this long.
+   **Fixing the other 32 was a separate concern** (CONTRIBUTING: one concern per PR) and got its
+   own pull request, #5. They were invisible to CI, which runs English — which is why they
+   survived this long, and why the English control run in item 1 was worth the second lab cycle.
 
    Measured figures. Windows, after the fixes: **2021 passed of 2053**, and the 32 failures are
    the table above line for line — nothing outside it. `Unit.CanonicalPrincipal` 59 of 59,
@@ -889,11 +964,13 @@ Ordered. Items 1–3 are the actual acceptance gate.
    has: child domains, multi-DC replication, RODC, or an English host against a localized domain.
 
    **Also measured that day, on the English host: the suite is 2110 of 2111 green.** The single
-   failure is `Unit.Prerequisites` / `IsDomainAdmin`, §4 trap 8. That settles what *Start here*
-   item 1 asserts: the 31 ACL failures are a fixture problem and not a product defect — same code,
-   same tests, a host whose `NTAccount(...).Translate()` can resolve the English literals. It does
-   **not** close item 1: those tests still cannot execute on a German host, which is the platform
-   this project exists for.
+   failure is `Unit.Prerequisites` / `IsDomainAdmin`, §4 trap 8. That settled what *Start here*
+   item 1 asserted: the 31 ACL failures are a fixture problem and not a product defect — same
+   code, same tests, a host whose `NTAccount(...).Translate()` can resolve the English literals.
+   It did **not** close item 1, because those tests still could not execute on a German host,
+   which is the platform this project exists for. **That closed on 2026-09-25** (`33e4e11`), and
+   this same English host then served as the control for it: 311 of 311 in the five files before
+   *and* after, which is what shows the fixtures did not simply go vacuous.
 7. **German ADML content.** `optional/New-TierModelAdmlManifest.ps1` and the procedure in
    `docs/admx-management.md` are ready; the `.adml` files are Microsoft redistributables and must
    be supplied by the operator. `download.microsoft.com` is blocked from the build environment

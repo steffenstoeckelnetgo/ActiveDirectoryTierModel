@@ -17,8 +17,17 @@
 > and an audit of 433 checks with 0 drift, all against a green-field German domain.
 >
 > **The suite figure moved too:** **2,056 passing of 2,088** on German Windows 11, 2026-09-16.
-> The 32 failures are host-language artefacts in the fixtures rather than product defects, and CI
-> — which runs English — never sees them. README carries the breakdown.
+> The 32 failures were host-language artefacts in the fixtures rather than product defects, and CI
+> — which runs English — never saw them. README carries the breakdown.
+>
+> **That suite figure now understates.** 31 of the 32 were fixed on 2026-09-25 (`33e4e11`) and
+> measured `311 of 311` on a German host, against `280 of 311` before. The whole suite was not
+> re-run that day, so the total above is left as measured rather than recalculated — deriving one
+> by arithmetic is what this file avoids. A German
+> `pwsh -NonInteractive -File .\tests\Invoke-AllTests.ps1` on `main` replaces it with a measured
+> number. Coverage is unaffected in the only sense that matters here: the change is tests only, so
+> the analysed population of 17,195 commands does not move, though the executed count can only
+> have risen.
 >
 > **Why coverage fell from 87.63%:** the localization work added code faster than tests reached
 > it, and the analysed population grew by **476 commands** (16,719 → 17,195). The 2026-09-08 run
