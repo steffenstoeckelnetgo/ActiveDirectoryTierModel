@@ -40,3 +40,12 @@ Welcome to the Active Directory Tier Model documentation.
 ## Reference
 
 - **[Language Support](https://microsoft.github.io/ActiveDirectoryTierModel/language-support/)** - Running against a localized (e.g. German) Active Directory: built-in principals resolve by well-known SID, so one configuration set works in any language
+
+## Added in this fork
+
+Not present upstream, so these are relative links rather than `microsoft.github.io` ones.
+
+- **[SMB Reference Architecture](smb-reference-architecture.md)** - Scoping the Tier Model for organisations too small for the full three-tier topology: how many tiers, where the PAWs run, the administrative endpoint, external service providers, and what each reduction gives up
+- **[Production Rollout Runbook](production-rollout-runbook.md)** - Deploying into a populated, multi-DC production domain: pre-flight, the run, verification, and the go-live levers
+- **[German Lab Runbook](german-lab-runbook.md)** - The repeatable acceptance cycle against a localized domain, phases A-F
+- **[Parity Lab Runbook](parity-lab-runbook.md)** - Comparing a localized and an English deployment built from the same commit
