@@ -24,6 +24,18 @@ a change window and how much is preparation:
 - Every authentication policy and silo ships **`enforce: false`**. They are created in audit mode.
 - All 105 OU ACL delegations target **Tier Model OUs only** — not one touches
   `OU=Domain Controllers` or the domain root (`config/tiermodel-acls.json`).
+- Of the **131 GPO links** the configuration declares, **51 ship `linkEnabled: false`** and 80 ship
+  enabled. The disabled ones are placeholders you are meant to fill in — `SOE`,
+  `SHF [Provider] [Version]`, BitLocker, Defender, the MSFT baselines, Windows LAPS, MDE group
+  tags, AppLocker enforcement — plus the domain-root switch above.
+
+> **A link, once created, is never re-enabled by this tool.** `New-TierModelGPOLink.ps1` passes
+> `linkEnabled` to `New-GPLink` on the **create** path only (`:129`); the branch for an existing
+> link (`:143-181`) reconciles link **order** and **enforcement** and nothing else. So every one of
+> those 51 — and the domain-root switch — is turned on with `Set-GPLink -LinkEnabled Yes`, by you.
+> Changing the configuration to `true` and re-running the GPO scope prints
+> `GPO link already converged` and changes nothing. §0.1 has the full sequence and why the
+> configuration change is still worth making alongside it.
 
 What *does* take effect at the next policy refresh is the GPOs that ship `linkEnabled: true` on
 `OU=Domain Controllers`. There are **five** of fourteen; the other nine ship link-disabled.
@@ -54,23 +66,46 @@ Model" is not how it should arrive.
 `ImportOnlyGpo`. This is an operator choice in your own configuration, not a change to the product
 — and it does not stage your deployment: everything else still goes out in one run.
 
-**Go-live is then a configuration change, not a click.** Set the value back to `true` and re-run
-the GPO scope:
+**Go-live is two steps, and it has to be both. A deploy run alone will not re-enable the link.**
 
 ```powershell
-.\Deploy-TierModel.ps1 -PreferredDc $dc -GposOnly -ConfirmApply -Logging -OutputFileBase "prod-golive-audit"
+# 1. The change itself. The product cannot do this - see the note below.
+Set-GPLink -Name '*- Tier 0 DCs Advanced Audit Policy - Computer' `
+           -Target "OU=Domain Controllers,$((Get-ADDomain).DistinguishedName)" `
+           -LinkEnabled Yes -Server $dc
+
+# 2. Put the configuration back, so the audit starts guarding the enabled state.
+#    config/tiermodel-gpos.json  ->  "linkEnabled": true
+.\Audit-TierModel.ps1 -PreferredDc $dc -GposOnly
 ```
 
-That keeps the lever versioned and reviewable. Disabling the link by hand in GPMC instead would
-leave the policy live from the deployment until you get to it — which is the exact window this
-section exists to avoid.
+> **Why `Set-GPLink` and not another `-GposOnly` deploy run.** `New-TierModelGPOLink.ps1` reads
+> `linkEnabled` at `:76` and uses it **only on the create path** (`:129`, `New-GPLink -LinkEnabled`).
+> The branch that handles an *existing* link (`:143-181`) reconciles exactly two properties — link
+> **order** and **enforcement** — and never looks at the enabled state. So on a domain where the
+> link already exists, flipping the configuration to `true` and re-running the GPO scope prints
+> `GPO link already converged` and **leaves the link disabled**. An earlier revision of this
+> runbook said the re-run was the go-live step; it is not, and following it would have left the
+> audit policy switched off while the paperwork said otherwise.
 
-> **The audit will NOT remind you.** `Test-TierModelGPOAudit.ps1:243` takes its expectation *from
-> the configuration* (`$expectedEnabled = … $gpoConfig.linkEnabled … else $true`) and compares it
-> against the live link. Configuration `false` plus a disabled link is **agreement — Pass, no
-> drift**. Your written note is the only reminder, so write it down. (An earlier revision of this
-> runbook claimed the audit would report drift here. It does not, and acting on that would have
-> meant waiting for a signal that never comes.)
+The configuration change in step 2 is still worth making, for the opposite reason: it is what puts
+the lever under the audit. `Test-TierModelGPOAudit.ps1:243` takes its expectation *from the
+configuration* (`$expectedEnabled = … $gpoConfig.linkEnabled … else $true`) and compares it against
+the live link, so:
+
+| configuration | live link | audit |
+|---|---|---|
+| `false` | disabled | **Pass** — agreement. This is the state you deploy into, and it is silent |
+| `true` | enabled | **Pass** — and from here the audit reports it if anyone disables the link |
+| `true` | disabled | **Drift** — reported, but **no deploy run fixes it**; `Set-GPLink` does |
+
+Read the first row twice: between the deployment and your go-live, **nothing reminds you**. Not the
+audit, not the deploy summary. Your written note is the only reminder. (An earlier revision of this
+runbook claimed the audit would report drift in that state. It does not.)
+
+Disabling the link by hand in GPMC *after* an ordinary deployment is the worse alternative, and it
+is what this whole section exists to avoid: it leaves the policy live from the moment the run
+finishes until you get to the click.
 
 ---
 
@@ -265,7 +300,9 @@ tier structure.
    then enable the link. Watch event volume for a full business cycle before the next lever.
 2. **`*- Tier Model Account Restrictions`** at the domain root. This is tier separation taking
    effect. Review how Block Inheritance and Enforced interact with your existing GPOs first
-   (`detailed-deployment-guide.md:575`).
+   (`detailed-deployment-guide.md:575`). Like every other lever here it is a `Set-GPLink
+   -LinkEnabled Yes` against the link the deployment already created — **no deploy run switches it
+   on**, whatever the configuration says (§0).
 3. **Authentication silo enforcement, last.** Read the failure channel that the silo GPO enabled in
    §0 until it is quiet, then follow the checklist in `auth-silos-operations-guide.md:136`. Moving
    admin accounts into silos is an out-of-band operator task; the Tier Model does not manage user
