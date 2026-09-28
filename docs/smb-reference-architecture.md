@@ -21,7 +21,8 @@ copy of `config/`. This repository's own `config/` is not modified by any of it.
 
 **What is measured and what is judgement.** Section 2 is read out of `config/` and cited by file.
 Everything from section 3 onward is an architectural judgement, informed by those facts but not
-derived from them. Section 9 says so again, because the two get confused when a document is
+derived from them — section 9, on the cloud control plane, is outside this tool's scope entirely
+and rests on no file here. Section 9 says so again, because the two get confused when a document is
 quoted out of context.
 
 ---
@@ -266,7 +267,7 @@ allowlist is bypassed "just this once". That needs a defined path (download in t
 verification, controlled transfer), or the control decays within months.
 
 So this option answers *"no budget for hardware"*. It does not answer *"no capacity for
-discipline"*. Where neither exists, see section 9.
+discipline"*. Where neither exists, see section 10.
 
 ### What cannot be argued away
 
@@ -433,11 +434,162 @@ identical to one doing it properly — until someone asks for evidence.
 
 ---
 
-## 9. What this document does not claim
+## 9. The cloud control plane
 
-- **None of this is measured.** Section 2 is read out of `config/` and cited; sections 3 to 8 are
+Everything above assumes the thing being administered sits in a server room. For most
+organisations of this size the more valuable control plane is a Microsoft 365 tenant, and the
+question that arrives with it is: *a PAW is supposed to have no internet access — but
+administering the tenant **is** internet access.*
+
+### 9.1 "No internet" was never the rule
+
+The rule is the one from section 5: no untrusted code on the machine from which administration
+happens. "No internet" is a coarse proxy for it — it means arbitrary browsing, mail, downloads.
+Administering a tenant is HTTPS to a small, named, enumerable set of Microsoft endpoints. That is
+not internet access in the sense the rule intends.
+
+The implementation is therefore an **egress allowlist, not an internet ban**: the PAW reaches
+`login.microsoftonline.com`, the Entra, Microsoft 365, Azure, Defender and Purview admin portals,
+`graph.microsoft.com` and the endpoints in Microsoft's published 365 URL/IP list. Nothing else. No
+mail client, no browser extensions, no profile sync, no password manager with cloud
+synchronisation.
+
+That resolves the apparent contradiction. What follows is the part that is genuinely harder than
+the on-premises case.
+
+### 9.2 What actually changes: there is no network boundary
+
+On premises, a Tier 0 PAW can be isolated at the network layer. A domain controller is reachable
+only from the network it sits in.
+
+A tenant is reachable from anywhere on earth by anyone holding the credential. No firewall, VLAN or
+site boundary applies. Which produces the single most important sentence for this section:
+
+> **Conditional Access replaces the authentication silo. It is the only control that answers
+> "from where may this account administer".**
+
+| On premises | Microsoft 365 |
+|---|---|
+| `allowedToAuthenticateFromDeviceGroups` — Kerberos declines to issue the TGT | Conditional Access — *this role, only from a compliant device with phishing-resistant MFA* |
+| Lock 2 of 2 (logon rights are lock 1) | **Lock 1 of 1** |
+
+And because it is the only lock: **Conditional Access policies are themselves Tier 0 objects.** Who
+may edit them is the real control question. A CA misconfiguration is the equivalent of an open
+firewall rule, minus the network diagram on which somebody would have noticed it. Gate the roles
+that can change CA behind PIM with approval, and alert on policy changes.
+
+### 9.3 Identity
+
+Four items. Three of them are routinely skipped.
+
+1. **Cloud-only administrative accounts** (`adm-…@tenant.onmicrosoft.com`), **not** synchronised
+   from on-premises AD. A synchronised admin account falls with the on-premises directory. This is
+   the only way to break the dependency direction, and it is Microsoft's own guidance.
+2. **Phishing-resistant MFA** — FIDO2/passkey or certificate. Not push, not SMS. With token
+   binding, for the reason in section 6: the passkey secures the sign-in, what remains afterwards
+   is an ordinary bearer token.
+3. **PIM — no standing Global Administrator.** Time-bound activation, with approval and
+   justification. A permanent Global Administrator is a finding, not an operating model.
+4. **Break-glass:** two emergency accounts, cloud-only, deliberately excluded from Conditional
+   Access, long random credentials in a safe, **alerting on use**, tested annually. Identical in
+   role to the customer-held break-glass account in section 7, and for the same reason: whoever
+   locks themselves out has no agency left.
+
+### 9.4 The blind spot — this is section 7's agent problem, in the cloud
+
+For a service provider it was the RMM agent running as SYSTEM. In a tenant it is the **service
+principal**.
+
+An app registration holding `RoleManagement.ReadWrite.Directory` or `Application.ReadWrite.All` is
+effectively Global Administrator — with no user, no MFA, and ordinary user-scoped Conditional
+Access does not apply to it. No PIM. Often a client secret that is valid for years and belongs to
+nobody in particular.
+
+This is the path taken by the well-known tenant compromises, and it is skipped in most hardening
+conversations because it appears in no role report.
+
+- Disable user consent, or restrict it to verified publishers with low-risk permissions, and route
+  the rest through an admin consent workflow.
+- Inventory every app role assignment carrying high Graph permissions — **recurring**, not once.
+- Track secret and certificate lifetimes on service principals.
+- Apply workload-identity Conditional Access where licensed; at minimum bind the critical service
+  principals to a location.
+
+### 9.5 Dependency direction — this decides whether you have two tiers or one
+
+| Configuration | Consequence |
+|---|---|
+| Administrative accounts synchronised from AD | on-premises compromise ⇒ tenant compromise |
+| Cloud management reaches Tier 0 systems (DCs in Intune, Azure Arc, Autopilot) | tenant compromise ⇒ on-premises compromise |
+| **Both** | **there is one tier**, whatever the diagram says |
+
+And one server almost nobody classifies: **the Entra Connect server is Tier 0 on both sides.** It
+holds directory synchronisation rights in AD and a service principal in the tenant. Treat it like a
+domain controller, not like an application server.
+
+**Design decision:** cloud-only administrative accounts, and do not extend cloud management onto
+on-premises Tier 0 systems. Then there really are two planes. Otherwise there is one — which is not
+a failure, but it has to be known and written down rather than assumed away.
+
+### 9.6 For a small organisation: one PAW, two control planes
+
+> **The same Tier 0 PAW administers the on-premises directory and the tenant.** The egress
+> allowlist gains the Microsoft administrative endpoints; nothing else changes.
+
+No inversion, because both control planes are Tier 0. And in nearly every tenant of this size the
+two are already coupled through Entra Connect and cloud-managed endpoints — they are already **one**
+trust level. Splitting them across two devices then draws a boundary that does not exist, which is
+worse than an honest shared one.
+
+The recommendation from section 5 is therefore unchanged. The clean device simply does more.
+
+### 9.7 The Conditional Access set
+
+In order of effect:
+
+| # | Policy |
+|--:|---|
+| 1 | **Block legacy authentication**, tenant-wide. Without it everything below is bypassable |
+| 2 | **Administrative roles → phishing-resistant MFA + compliant or hybrid-joined device.** Target the admin portals *and* the directory roles themselves |
+| 3 | **Block the device code flow.** Underrated — device-code phishing bypasses the device requirement entirely |
+| 4 | **Token protection** for administrative sign-ins, with continuous access evaluation |
+| 5 | Session controls: no persistent browser session, short sign-in frequency for administrative roles |
+| 6 | Break-glass accounts excluded — **and alerted on** |
+| 7 | MFA for all users, not only administrators |
+| 8 | Workload identities: location binding for the critical service principals |
+
+**Before enforcing any of it:** report-only mode first, and use the what-if evaluator. A policy that
+locks out the administrator is the one mistake in this list that cannot be undone from inside —
+which is what item 6 exists for.
+
+### 9.8 Delegated administration by a service provider
+
+Section 7 applies unchanged, with one substitution: **the enforcement point is Conditional Access
+and delegated role assignment (GDAP), not the Kerberos silo.** Granular delegated administration is
+role-scoped and time-bound, which is a genuine improvement over what preceded it — but the
+structural position is identical. The partner tenant's compromise reaches the customer tenant, so
+the partner's administrative platform is the customer's control plane, and the customer-side
+controls that remain inspectable are the same ones: logging into the customer's own tenant,
+approval on elevation, break-glass the partner does not hold.
+
+The one cloud-specific addition: **review the partner's delegated role assignments on a schedule
+and let them expire.** A relationship that ended and a delegation that did not is the cloud
+equivalent of an account nobody offboarded.
+
+### 9.9 A caveat specific to this section
+
+Product names, licensing tiers and portal locations in this area move quickly. The architecture
+above does not depend on them, but the individual switches do — verify each against current
+Microsoft documentation before building, not against a document of this age.
+
+---
+
+## 10. What this document does not claim
+
+- **None of this is measured.** Section 2 is read out of `config/` and cited; sections 3 to 9 are
   architectural judgements. Cost figures, "the usual case" and market observations are opinions
-  stated as such.
+  stated as such. Section 9 rests on no file in this repository at all — the tool does not touch a
+  tenant — and carries its own caveat at 9.9.
 - **No variant here has been deployed and verified.** Every figure published in this repository
   comes from a single-domain-controller green-field laboratory. Variants A and C, the AVD topology
   and the merged Tier 1/2 PAW have not been built and audited end to end.
