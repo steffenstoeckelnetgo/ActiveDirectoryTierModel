@@ -49,12 +49,28 @@ your forensic window with it, or a SIEM ingestion bill nobody approved. The poli
 defensible — roughly the Microsoft baseline — but arriving as a side effect of "deploy the Tier
 Model" is not how it should arrive.
 
-**Set `"linkEnabled": false` on that one entry in your `config/tiermodel-gpos.json` before you
-run**, and link it later as its own change, after raising the Security log size and confirming SIEM
-headroom. This is an operator choice in your own configuration, not a change to the product, and it
-does not stage your deployment — everything else still goes out in one run. The audit will report
-that one link as drift until you enable it, which is the correct signal for "not yet". Write down
-that you did it so it is re-enabled deliberately rather than forgotten.
+**Set `"linkEnabled": false` on that one entry before you run**, in *your* copy of
+`config/tiermodel-gpos.json`, under `OU=Domain Controllers,{{DOMAIN_DN}}`, section
+`ImportOnlyGpo`. This is an operator choice in your own configuration, not a change to the product
+— and it does not stage your deployment: everything else still goes out in one run.
+
+**Go-live is then a configuration change, not a click.** Set the value back to `true` and re-run
+the GPO scope:
+
+```powershell
+.\Deploy-TierModel.ps1 -PreferredDc $dc -GposOnly -ConfirmApply -Logging -OutputFileBase "prod-golive-audit"
+```
+
+That keeps the lever versioned and reviewable. Disabling the link by hand in GPMC instead would
+leave the policy live from the deployment until you get to it — which is the exact window this
+section exists to avoid.
+
+> **The audit will NOT remind you.** `Test-TierModelGPOAudit.ps1:243` takes its expectation *from
+> the configuration* (`$expectedEnabled = … $gpoConfig.linkEnabled … else $true`) and compares it
+> against the live link. Configuration `false` plus a disabled link is **agreement — Pass, no
+> drift**. Your written note is the only reminder, so write it down. (An earlier revision of this
+> runbook claimed the audit would report drift here. It does not, and acting on that would have
+> meant waiting for a signal that never comes.)
 
 ---
 
@@ -78,6 +94,12 @@ the GPC to have replicated first.
 ```powershell
 $dc = (Get-ADDomain).PDCEmulator
 ```
+
+**It is a parameter, not a setting — there is nowhere to "enter" it.** `-PreferredDc` is passed on
+every command and nothing persists it. `config/tiermodel.schema.json:12` does declare a
+`preferredDc` field, but **no code reads it**: the only other occurrence in the repository is
+`Audit-TierModel.ps1:2615`, which writes the *parameter's* value into the report. Putting a DC name
+into the configuration therefore does nothing at all, and does it silently.
 
 That aligns all three rows, removes the race, and matches where GPMC writes anyway. It also
 satisfies the probe's deliberate asymmetry — an unreadable or unreplicated folder changes nothing,
@@ -219,7 +241,7 @@ re-run; the deployment is idempotent.
 | Check | Expected |
 |---|---|
 | Second deployment run | **`Applied: 0 / Errors: 0 / Converged: True`** |
-| Audit | **`Drift 0 / Errors 0`**, except the one DC audit-policy link disabled in §0.1 |
+| Audit | **`Drift 0 / Errors 0`** — including the DC audit-policy link from §0.1, because the audit compares against *your* configuration and you set it to `false` there. **Any** drift finding here is a real one; there is no expected exception to wave through |
 | Localization report | `0 unresolved`, `No problems found.` |
 
 The second run is constitution principle III and the only evidence that nothing was left
