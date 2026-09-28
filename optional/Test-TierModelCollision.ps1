@@ -158,8 +158,35 @@ $gpoExisting = 0
 $gpoTotal    = 0
 if (Get-Module GroupPolicy) {
     $gpoConfig = Read-Config 'tiermodel-gpos.json'
-    $names = @($gpoConfig.gpos | ForEach-Object { $_.name } | Where-Object { $_ }) | Sort-Object -Unique
+
+    # tiermodel-gpos.json nests three levels deep, and getting this wrong fails SILENTLY:
+    #
+    #   gpos : { "<OU DN>" : { "ImportOnlyGpo" : [ {name, ...}, ... ],
+    #                          "PostConfigureGpo" : [ ... ] }, ... }
+    #
+    # 'gpos' is an OBJECT KEYED BY OU, not an array of GPOs. Piping it through
+    # ForEach-Object { $_.name } yields the container once, $_.name is $null, and the
+    # result is an empty set - which this script then reported as "0 configured,
+    # 0 already present" and folded into a green "No collisions" verdict. Measured on
+    # the real configuration the answer is 146.
+    $names = @(
+        foreach ($ouProperty in $gpoConfig.gpos.PSObject.Properties) {
+            foreach ($sectionProperty in $ouProperty.Value.PSObject.Properties) {
+                foreach ($entry in @($sectionProperty.Value)) {
+                    if ($entry -is [psobject] -and $entry.PSObject.Properties['name']) { $entry.name }
+                }
+            }
+        }
+    ) | Where-Object { $_ } | Sort-Object -Unique
+
     $gpoTotal = $names.Count
+
+    # Anti-vacuity. A configuration file that parsed but yielded no GPO name is a defect in
+    # this script, not a clean result - and a clean result is exactly what it looks like.
+    # Refuse to report a verdict over a set nobody read.
+    if ($gpoTotal -eq 0) {
+        throw "Test-TierModelCollision: read tiermodel-gpos.json but found 0 GPO names. The configuration declares 146. This is a defect in this script's traversal, not an empty configuration - do not read the verdict below as 'no GPO collisions'."
+    }
     foreach ($n in $names) {
         $found = $null
         try { $found = Get-GPO -Name $n -Server $PreferredDc -ErrorAction Stop } catch { }
