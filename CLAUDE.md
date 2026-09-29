@@ -540,13 +540,21 @@ differ:**
   (`Test-TierModelPrerequisites.ps1:655-666` takes the key with the *latest* `EffectiveTime`, so a
   second back-dated key does not help while the 2026-10-08 one exists). Add `-IncludeGmsa` to
   every command.
-- **`sade.local` deploys the shared Tier 0/Tier 1 PAW variant**, `docs/shared-paw-tier0-tier1.md`,
-  including Tier-1-only people and RDP. Its customer-config edits (1 OU, 1 group, the Tier 0 PAW
-  logon rights, 2 placeholder GPOs, a fifth authentication policy) must be in place **before the
-  first run**: an existing GPO is never reconfigured and an existing policy never modified.
-- **Expected plan count with both: `722 + (number of DCs − 1)`** — 711 + 4 gMSA + 7 for the
-  variant. Derived, not measured; the plan run confirms it. The collision check should then report
-  32 OUs / 30 groups / 148 GPOs configured.
+- **Administration runs on shared hosts per tier**, `docs/shared-admin-hosts.md`: one or more
+  Windows 11 / Windows Server / AVD hosts per tier, used by every administrator of that tier over
+  RDP, including the MSP's Tier-1-only technicians on the Tier 1 hosts. Multi-session allowed,
+  AppLocker optional. **It needs no change to the shipped PAW configuration**: the hosts go into
+  `OU=Tier 0 PAW Devices` / `OU=Tier 1 PAW Devices` and the matching device groups, and the
+  shipped logon rights already refuse the wrong account on the wrong host. An earlier design the
+  same day (one Tier 0 PAW admitting Tier 1 accounts through a new group, OU and policy) was
+  superseded before anything was deployed; it is in the history of this file's branch, not in use.
+- **Expected plan count: `715 + (number of DCs − 1)`** — 711 + 4 gMSA. **+4** if the two optional
+  placeholder GPOs from `shared-admin-hosts.md` §7 go into the customer configuration before the
+  run; they can also be added later, because a *new* GPO is planned on any run. The collision
+  check then reports 31 / 29 / 146, or 31 / 29 / 148 with the placeholders.
+- **Open until tested on the first host:** whether the enforced Tier 0 policy blocks direct RDP
+  from an ordinary client, or is bypassed by an NTLM fallback (`shared-admin-hosts.md` §4, tests
+  B5/B6). It decides whether Tier 0 enforcement goes ahead, stays in audit mode, or moves to AVD.
 
 **Then:** second identical run (`Applied: 0 / Converged: True`), audit (`Drift 0 / Errors 0`),
 localization report (`No problems found.`). The go-live levers come after, each its own change.

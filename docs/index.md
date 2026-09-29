@@ -46,7 +46,7 @@ Welcome to the Active Directory Tier Model documentation.
 Not present upstream, so these are relative links rather than `microsoft.github.io` ones.
 
 - **[SMB Reference Architecture](smb-reference-architecture.md)** - Scoping the Tier Model for organisations too small for the full three-tier topology: how many tiers, where the PAWs run, the administrative endpoint, external service providers, and what each reduction gives up
-- **[One PAW, Two Contexts](shared-paw-tier0-tier1.md)** - Sharing the Tier 0 PAW with Tier 1: a Tier 0-controlled admission group, the exact logon-right and authentication-policy changes, the deliberate-context settings, and the acceptance test
+- **[Shared Administration Hosts](shared-admin-hosts.md)** - No PAW per administrator: one or more shared hosts per tier reached over RDP, on Windows 11, Windows Server or Azure Virtual Desktop - what the shipped configuration already enforces, where the RDP client weakens it, and the acceptance test
 - **[Production Rollout Runbook](production-rollout-runbook.md)** - Deploying into a populated, multi-DC production domain: pre-flight, the run, verification, and the go-live levers
 - **[German Lab Runbook](german-lab-runbook.md)** - The repeatable acceptance cycle against a localized domain, phases A-F
 - **[Parity Lab Runbook](parity-lab-runbook.md)** - Comparing a localized and an English deployment built from the same commit
