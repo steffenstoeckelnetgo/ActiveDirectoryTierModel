@@ -38,6 +38,10 @@ authentication policies into a production directory. The pull request is therefo
 change is ever read as a whole. Run the repo's own checks yourself before pushing; do not push and
 find out.
 
+> **Reading this at the start of a session? Go to §6 first.** A production deployment is in flight
+> on `sade.local` — a populated, multi-DC forest root, the first non-lab target. §6's opening block
+> carries the host, the pre-flight results, the scope decision and the exact commands.
+
 **Status: functionally complete, verified end to end on a live green-field German domain — and,
 since 2026-09-24, proven equal to an English one.** The parity run put both domains side by side
 at commit `ce528e4` and `optional/Compare-TierModelDeploymentReport.ps1` reported
@@ -478,6 +482,96 @@ unverified is the *deployment*, not the resolver: see §6 item 5 and
 ---
 
 ## 6. Next steps
+
+### The live rollout — `sade.local`, state at 2026-09-29
+
+**This is what a fresh session should read first.** A production deployment is in flight; the
+repository work behind it is finished.
+
+| | |
+|---|---|
+| Domain | `sade.local`, forest root, **several domain controllers**, populated (this is the first non-lab target) |
+| Admin host | `vmdc01.sade.local`, working copy at `C:\Labs\ActiveDirectoryTierModel` |
+| **Deploy from** | **`main`, not from the tag.** `v2.2.0` points at `0cce34d`, which predates the collision-script fix (`9cd3e92`) that the pre-flight depends on. The tag also exists only locally — `git ls-remote --tags` is empty |
+| Operator sheet | German, session scratchpad, delivered to the owner as a file. Not in the repository (§8 keeps repository content English, and it carries customer specifics). Everything load-bearing from it is reproduced here and in `docs/production-rollout-runbook.md` |
+
+**Pre-flight: done, all four, all green.**
+
+| Check | Result |
+|---|---|
+| Collision (`optional/Test-TierModelCollision.ps1`) | **31 OUs / 29 groups / 3 service accounts / 146 GPOs configured, 0 already present.** The domain carries none of it |
+| Canonical root DACL | `RootAclCanonical: True` |
+| Windows LAPS schema + module | present |
+| Backup | the owner's step, before the run |
+
+**Scope for the first run, and why it is not the full set:**
+
+- **no `-IncludeDmsa`** — domain functional level is Windows2016Domain; dMSA needs 2025. Out until
+  the DFL is raised, which is its own decision and its own window.
+- **no `-IncludeGmsa`** — the KDS root key was created without `-EffectiveTime` and becomes
+  effective **2026-10-08**. `Test-TierModelPrerequisites` hard-stops until then
+  (`:654-675`). Pull it in afterwards with a standalone `-IncludeGmsa` run: **4 actions**, four ACL
+  delegations. *Measured while answering this:* MSA, gMSA and dMSA configs contain
+  `aclDelegations` **only**, four each — the deployment creates no service account at all, so the
+  KDS key is a gate requirement rather than an operational one. It is still a gate and is not
+  bypassed.
+
+```powershell
+$dc = (Get-ADDomain).PDCEmulator          # every command, every phase (§6 multi-DC note)
+.\Deploy-TierModel.ps1 -PreferredDc $dc -FullDeployment `
+    -IncludeMsa -IncludeWinLaps -IncludeAuthSilos            # plan; add -ConfirmApply to run
+```
+
+**Expected plan count: `711 + (number of DCs − 1)`.** 719 in the lab, minus 4 gMSA and 4 dMSA ACL
+delegations. The DC term is not decoration: silo membership is counted per *account* in plan mode
+(`Deploy-TierModel.ps1:2477`) and the only populated member group today is `Domain Controllers` —
+`Tier0MemberServers`, `Tier0PAWDevices` and every `Tier1*`/`Tier2*` group are empty. The lab had one
+DC. A materially different number is a finding to understand before applying, because the collision
+check says nothing exists yet.
+
+**Before the run:** set `"linkEnabled": false` on `*- Tier 0 DCs Advanced Audit Policy - Computer`
+in the customer's `config/tiermodel-gpos.json` (§0.1 of the production runbook — 33 audit
+subcategories, 27 of them Success *and* Failure).
+
+**Then:** second identical run (`Applied: 0 / Converged: True`), audit (`Drift 0 / Errors 0`),
+localization report (`No problems found.`). The go-live levers come after, each its own change.
+
+### Two findings from the rollout preparation, both merged
+
+1. **`optional/Test-TierModelCollision.ps1` read no GPOs at all and reported it as clean**
+   (`9cd3e92`, [PR #8](https://github.com/steffenstoeckelnetgo/ActiveDirectoryTierModel/pull/8)).
+   `config/tiermodel-gpos.json` nests `gpos` as an **object keyed by OU DN**, not a flat array, so
+   `$gpoConfig.gpos | ForEach-Object { $_.name }` yielded an empty set without throwing — one
+   quarter of the pre-flight printed `0 configured` and a green verdict, on a production domain.
+   Fixed by walking OU → section → entry, and by throwing when the file parses but yields zero
+   names: §4 trap 6 again, in a script that did not have the guard.
+2. **No deploy run ever re-enables a GPO link** (`2a18f8d`, documentation).
+   `New-TierModelGPOLink.ps1` passes `linkEnabled` to `New-GPLink` on the **create** path only
+   (`:129`); the branch for an existing link (`:143-181`) reconciles link order and enforcement and
+   never reads the enabled state. Setting the configuration back to `true` and re-running
+   `-GposOnly` prints `GPO link already converged` and changes nothing. **Every go-live lever is a
+   `Set-GPLink -LinkEnabled Yes`.** Measured alongside it: **51 of the 131 declared GPO links ship
+   `linkEnabled: false`** — SOE, SHF placeholders, BitLocker, Defender, the MSFT baselines, Windows
+   LAPS, MDE tags, AppLocker enforcement, plus the domain-root switch. The runbook had told the
+   operator to go live the other way; following it would have left the audit policy switched off
+   while the configuration said it was on.
+
+Also corrected in `docs/production-rollout-runbook.md` §5: the silo lever needs a **rolling DC
+restart** before the `AuthenticationPolicyFailures-DomainController` channel exists
+(`auth-silos-operations-guide.md:102`), and the deployment enrols **computer accounts only** — until
+a privileged user account carries the policy by direct assignment, **not one Event 305 is
+produced**, so a quiet channel proves nothing.
+
+### New documentation, 2026-09-28/29
+
+`docs/smb-reference-architecture.md` — scoping this Tier Model for organisations too small for the
+full three-tier topology. Section 2 is measured out of `config/` and cited; the rest is
+architectural judgement and says so, including a cloud control-plane section that rests on no file
+here. It describes configuration changes for a merged Tier 1/2 topology; it does **not** ship them,
+and `config/` in this fork remains at 0 of 19 files changed. `docs/index.md` gained a section for
+this fork's own documents, which were not listed at all.
+
+---
 
 ### Start here — state of `main`, 2026-09-25
 

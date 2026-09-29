@@ -5,6 +5,45 @@ All notable changes to the TierModel project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Not tagged. `v2.2.0` exists locally at `0cce34d` and has never been pushed; everything below
+post-dates it, which is why a production run should deploy from `main` rather than from the tag.
+`ModuleVersion` stays 2.2.0 — the module itself is unchanged.
+
+### Fixed
+- **`optional/Test-TierModelCollision.ps1` read no GPO names at all and reported the result as
+  clean.** `config/tiermodel-gpos.json` nests `gpos` as an object keyed by OU distinguished name,
+  not as a flat array, so piping it through `ForEach-Object { $_.name }` produced an empty set
+  without throwing. The GPO quarter of the pre-flight printed `0 configured` followed by a green
+  verdict — found on the first production run, against a live domain. The traversal now walks
+  OU → section → entry (measured: 146 entries, 146 distinct names), and the script throws when the
+  file parses but yields zero names, because an empty result and a check that never ran are
+  otherwise indistinguishable.
+
+### Documentation
+- **`docs/production-rollout-runbook.md`: no deploy run re-enables a GPO link.**
+  `New-TierModelGPOLink.ps1` passes `linkEnabled` to `New-GPLink` on the create path only (`:129`);
+  the existing-link branch (`:143-181`) reconciles link order and enforcement and never reads the
+  enabled state. The runbook had told operators to go live by setting the configuration back to
+  `true` and re-running `-GposOnly`, which prints `GPO link already converged` and changes nothing.
+  Every lever is a `Set-GPLink -LinkEnabled Yes`. Recorded alongside it: 51 of the 131 declared GPO
+  links ship `linkEnabled: false`.
+- **The same runbook, §5:** the authentication-silo lever needs a rolling domain-controller restart
+  before the `AuthenticationPolicyFailures-DomainController` channel exists, and the deployment
+  enrols computer accounts only — until a privileged user account carries the policy by direct
+  assignment, no Event 305 is produced and a quiet channel proves nothing.
+- **New: `docs/smb-reference-architecture.md`** — scoping the Tier Model for organisations too
+  small for the full three-tier topology: how many tiers, where the PAWs run, the administrative
+  endpoint, authentication, external service providers, assurance across an organisational
+  boundary, and the cloud control plane. Section 2 is measured out of `config/` and cited by file;
+  everything after it is architectural judgement and says so. It describes the configuration
+  changes for a merged Tier 1/2 topology without shipping them — `config/` in this fork remains
+  unchanged.
+- **`docs/index.md`** gained a section for this fork's own documents, which were not listed at all.
+
+---
+
 ## [2.2.0] - 2026-09-25
 
 The first tagged release. `ModuleVersion` has read 2.2.0 since the localization work merged on

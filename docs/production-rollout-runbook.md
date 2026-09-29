@@ -42,7 +42,7 @@ What *does* take effect at the next policy refresh is the GPOs that ship `linkEn
 
 | GPO | Effect |
 |---|---|
-| `*- Tier 0 DCs Authentication Silo - Computer` | Enables the `AuthenticationPolicyFailures-DomainController` event channel. Benign, and it is the evidence you need *before* ever enforcing a silo. Link it early. |
+| `*- Tier 0 DCs Authentication Silo - Computer` | Enables the `AuthenticationPolicyFailures-DomainController` event channel. Benign, and it is the evidence you need *before* ever enforcing a silo. Link it early. **The channel does not appear until the domain controller is rebooted** (`auth-silos-operations-guide.md:102`) — plan a rolling restart, or the audit period never starts. |
 | `*- Tier 0 DCs PowerShell Audit Policy - Computer` | PowerShell logging. Modest volume. |
 | `*- Tier 0 DCs MSFT Edge Version v139 - Computer` | Browser hardening. |
 | `*- Tier 0 DCs MSFT Internet Explorer 11 - Computer` | Browser hardening. |
@@ -303,10 +303,34 @@ tier structure.
    (`detailed-deployment-guide.md:575`). Like every other lever here it is a `Set-GPLink
    -LinkEnabled Yes` against the link the deployment already created — **no deploy run switches it
    on**, whatever the configuration says (§0).
-3. **Authentication silo enforcement, last.** Read the failure channel that the silo GPO enabled in
-   §0 until it is quiet, then follow the checklist in `auth-silos-operations-guide.md:136`. Moving
-   admin accounts into silos is an out-of-band operator task; the Tier Model does not manage user
-   silo membership.
+3. **Authentication silo enforcement, last** — and two things have to happen before the lever
+   exists at all.
+
+   **The deployment enrols computer accounts only.** Privileged user and service accounts receive
+   the tier policy by direct assignment (`msDS-AssignedAuthNPolicy`), by hand or through
+   `optional/Update-TierModelMembership.ps1`; user and service silo membership is an out-of-band
+   operator task (`auth-silos-operations-guide.md:26-29`). **Until that assignment happens, not one
+   Event 305 is produced**, so the audit period has not begun — it has merely looked quiet.
+
+   ```powershell
+   # a) Assign. NEVER to the RID-500 break-glass account.
+   Set-ADAccountAuthenticationPolicy -Identity <admin-account> `
+       -AuthenticationPolicy '*- Tier 0 Authentication Policy' -Server $dc
+
+   # b) Positive control: request a fresh TGT from a NON-approved device, then confirm the 305
+   #    reaches the servicing DC and your monitoring.
+   Get-WinEvent -LogName "Microsoft-Windows-Authentication/AuthenticationPolicyFailures-DomainController" |
+       Where-Object Id -eq 305 | Select-Object TimeCreated, Message
+   ```
+
+   The positive control is not optional: *"a nonfunctional or unassigned control also produces zero
+   305s, so a clean baseline alone is not proof the control is working"*
+   (`auth-silos-operations-guide.md:143-146`). Same shape as the collision check's object count and
+   the analyzer's non-excluded run — an empty result and a check that never ran look identical.
+
+   Then triage every 305 over a representative period until none is left open, test break-glass,
+   and follow the checklist at `auth-silos-operations-guide.md:136-152`. Rollback is
+   `Enforce = false` on the silo **and** the policy — both, not one.
 
 Populating the tier groups and moving computers into the tier OUs is a migration project, not this
 deployment.

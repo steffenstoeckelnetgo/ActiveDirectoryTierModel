@@ -172,6 +172,59 @@ PAW.
 The Tier 2 PAW OU and its GPO stay deployed and unused. They cost nothing, and the boundary can be
 re-established later without redeploying.
 
+### Decision 1b — where to enforce the silos
+
+Deploying the silos and *enforcing* them are separate decisions, and the second one has a different
+answer in a small organisation than in a large one. Both arguments get stronger here, which is
+counter-intuitive and worth unpacking.
+
+**What makes silos easier in a small environment:**
+
+| | Enterprise | Small organisation |
+|---|---|---|
+| Privileged accounts to maintain | hundreds, constant churn | **two to five** |
+| Approved origin devices | hundreds of servers, moving | **the DCs, one or two servers, a PAW** |
+| Maintenance | needs `optional/Update-TierModelMembership.ps1` as a scheduled task on a writable GC domain controller, PowerShell 7, a mandatory exclusion decision | **by hand, three commands** |
+
+That is the actual simplification: at this size the reconciliation script is unnecessary. It exists
+for a scale that is not present, and direct policy assignment on a handful of accounts is both
+simpler to reason about and simpler to reverse. The guide already recommends choosing one model per
+account rather than stacking direct assignment and silo membership.
+
+The deeper argument: **a small organisation has no security operations centre.** Nearly every other
+control in this stack requires somebody to notice something. A silo notices nothing — it declines.
+A control the domain controller enforces with no human in the loop is exactly what suits an
+organisation that cannot watch.
+
+**What makes them harder here:** the blind spots from section 2 are the small-environment
+landscape. NTLM, LDAP simple bind, RADIUS/NPS, cached logon — the old NAS, the legacy line-of-
+business application, the VPN. Under enforcement, NTLM that cannot satisfy the policy can be
+rejected and logged as Event 101, **with no Event 305 warning beforehand**. And the audit period
+runs for weeks; if nobody triages Event 305, the outcome is either never enforcing (the silos are
+decoration) or enforcing blind (an outage nobody can diagnose).
+
+> Silos are cheap to deploy and expensive to **operate correctly**. The operating cost is the
+> disciplined audit period, and that is precisely what tends to be skipped at this size.
+
+**Recommendation:**
+
+| | |
+|---|---|
+| Deploy all 4 policies and 4 silos, audit mode | **yes, always** — it costs nothing and starts the clock, and weeks of observation cannot be back-dated |
+| Assign the policy to Tier 0 accounts, by hand | **yes** |
+| Enforce **Tier 0** after a clean audit period | **yes** |
+| Enforce Tier 1 / Tier 2 / Tier 2 EUD | **no**, not at this size |
+
+Tier 0 enforcement is a handful of accounts against a handful of enumerable devices: the largest
+gain and the smallest, most predictable blast radius. Tier 1 and Tier 2 are where the service
+accounts, legacy applications and NTLM paths live — dozens of systems, none of them inventoried —
+and the gain over the URA deny lists is small against a large outage risk. Tier 2 EUD is the least
+controlled device class of all and its policy does not even shorten the TGT lifetime.
+
+Three things are owed before enforcing Tier 0 at this size, because there is no second team to call:
+break-glass tested beforehand (never assign a policy to RID 500), the positive control run, and a
+rehearsed rollback — `Enforce = false` on the silo **and** the policy, both.
+
 ---
 
 ## 4. Decision 2 — where the PAWs run
