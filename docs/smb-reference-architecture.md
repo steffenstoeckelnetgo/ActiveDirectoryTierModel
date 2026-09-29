@@ -172,6 +172,10 @@ PAW.
 The Tier 2 PAW OU and its GPO stay deployed and unused. They cost nothing, and the boundary can be
 re-established later without redeploying.
 
+The opposite reduction — **one PAW for Tier 0 and Tier 1**, the context chosen at logon — is its
+own document, because it adds a door into a Tier 0 device rather than merging two lower tiers:
+[`shared-paw-tier0-tier1.md`](shared-paw-tier0-tier1.md).
+
 ### Decision 1b — where to enforce the silos
 
 Deploying the silos and *enforcing* them are separate decisions, and the second one has a different
@@ -644,8 +648,9 @@ Microsoft documentation before building, not against a document of this age.
   stated as such. Section 9 rests on no file in this repository at all — the tool does not touch a
   tenant — and carries its own caveat at 9.9.
 - **No variant here has been deployed and verified.** Every figure published in this repository
-  comes from a single-domain-controller green-field laboratory. Variants A and C, the AVD topology
-  and the merged Tier 1/2 PAW have not been built and audited end to end.
+  comes from a single-domain-controller green-field laboratory. Variants A and C, the AVD topology,
+  the merged Tier 1/2 PAW and the shared Tier 0/Tier 1 PAW (`shared-paw-tier0-tier1.md`) have not
+  been built and audited end to end.
 - **The configuration changes in section 3 are described, not supplied.** They belong in a
   customer's configuration. This repository's `config/` is unmodified — its purpose is language
   support, not topology variants.

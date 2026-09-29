@@ -533,6 +533,21 @@ check says nothing exists yet.
 in the customer's `config/tiermodel-gpos.json` (§0.1 of the production runbook — 33 audit
 subcategories, 27 of them Success *and* Failure).
 
+**Update 2026-09-29, the owner's decisions of the day — they supersede the scope above where they
+differ:**
+
+- **gMSA is back in.** The owner reports the KDS root key effective. The gate still checks it
+  (`Test-TierModelPrerequisites.ps1:655-666` takes the key with the *latest* `EffectiveTime`, so a
+  second back-dated key does not help while the 2026-10-08 one exists). Add `-IncludeGmsa` to
+  every command.
+- **`sade.local` deploys the shared Tier 0/Tier 1 PAW variant**, `docs/shared-paw-tier0-tier1.md`,
+  including Tier-1-only people and RDP. Its customer-config edits (1 OU, 1 group, the Tier 0 PAW
+  logon rights, 2 placeholder GPOs, a fifth authentication policy) must be in place **before the
+  first run**: an existing GPO is never reconfigured and an existing policy never modified.
+- **Expected plan count with both: `722 + (number of DCs − 1)`** — 711 + 4 gMSA + 7 for the
+  variant. Derived, not measured; the plan run confirms it. The collision check should then report
+  32 OUs / 30 groups / 148 GPOs configured.
+
 **Then:** second identical run (`Applied: 0 / Converged: True`), audit (`Drift 0 / Errors 0`),
 localization report (`No problems found.`). The go-live levers come after, each its own change.
 
