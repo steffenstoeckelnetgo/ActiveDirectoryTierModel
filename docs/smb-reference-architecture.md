@@ -172,6 +172,11 @@ PAW.
 The Tier 2 PAW OU and its GPO stay deployed and unused. They cost nothing, and the boundary can be
 re-established later without redeploying.
 
+A different reduction — **no PAW per administrator**, but shared administration hosts per tier,
+reached over RDP by everyone in that tier and the context chosen by account and host — is its own
+document, because it moves part of the boundary onto the RDP client:
+[`shared-admin-hosts.md`](shared-admin-hosts.md).
+
 ### Decision 1b — where to enforce the silos
 
 Deploying the silos and *enforcing* them are separate decisions, and the second one has a different
@@ -268,8 +273,12 @@ Answer that before the AVD decision, not after.
 
 ### Non-negotiable for a Tier 0 session host
 
-1. **No multi-session.** Windows Enterprise multi-session places several administrators in one OS
-   instance. Personal host pool, 1:1, persistent.
+1. **No multi-session across tiers.** Windows Enterprise multi-session places several administrators
+   in one OS instance. A host shared by Tier 0 and anything below it is never acceptable. A pool
+   used by **Tier 0 administrators only** is a deliberate deviation with a named residual risk —
+   session takeover between peers — and is described, with what reduces it, in
+   [`shared-admin-hosts.md`](shared-admin-hosts.md) §5. Absent that decision: personal host pool,
+   1:1, persistent.
 2. **No FSLogix on Azure Files with storage key access enabled.** The key bypasses every AD
    permission, and the profile holds RDP history, browser state and credential artefacts.
 3. **Redirection off** — drive, clipboard, USB, printer — in the host pool's RDP properties.
@@ -329,7 +338,9 @@ Access configuration changes this, because **a single Tier 0 session is sufficie
 access** — an account added to `Domain Admins`, an ACE on the domain root, a GPO, `krbtgt`
 material — and that access is thereafter decoupled from any authentication.
 
-*Where* the separation runs is negotiable. *That* it exists is not.
+*Where* the separation runs is negotiable. *That* it exists is not. The same holds for shared
+administration hosts per tier (`shared-admin-hosts.md`): sharing a clean host between peers keeps
+the separation; the client that opens the session becomes part of it.
 
 ---
 
@@ -644,8 +655,9 @@ Microsoft documentation before building, not against a document of this age.
   stated as such. Section 9 rests on no file in this repository at all — the tool does not touch a
   tenant — and carries its own caveat at 9.9.
 - **No variant here has been deployed and verified.** Every figure published in this repository
-  comes from a single-domain-controller green-field laboratory. Variants A and C, the AVD topology
-  and the merged Tier 1/2 PAW have not been built and audited end to end.
+  comes from a single-domain-controller green-field laboratory. Variants A and C, the AVD topology,
+  the merged Tier 1/2 PAW and the shared administration hosts per tier (`shared-admin-hosts.md`)
+  have not been built and audited end to end.
 - **The configuration changes in section 3 are described, not supplied.** They belong in a
   customer's configuration. This repository's `config/` is unmodified — its purpose is language
   support, not topology variants.

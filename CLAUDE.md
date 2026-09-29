@@ -533,6 +533,29 @@ check says nothing exists yet.
 in the customer's `config/tiermodel-gpos.json` (§0.1 of the production runbook — 33 audit
 subcategories, 27 of them Success *and* Failure).
 
+**Update 2026-09-29, the owner's decisions of the day — they supersede the scope above where they
+differ:**
+
+- **gMSA is back in.** The owner reports the KDS root key effective. The gate still checks it
+  (`Test-TierModelPrerequisites.ps1:655-666` takes the key with the *latest* `EffectiveTime`, so a
+  second back-dated key does not help while the 2026-10-08 one exists). Add `-IncludeGmsa` to
+  every command.
+- **Administration runs on shared hosts per tier**, `docs/shared-admin-hosts.md`: one or more
+  Windows 11 / Windows Server / AVD hosts per tier, used by every administrator of that tier over
+  RDP, including the MSP's Tier-1-only technicians on the Tier 1 hosts. Multi-session allowed,
+  AppLocker optional. **It needs no change to the shipped PAW configuration**: the hosts go into
+  `OU=Tier 0 PAW Devices` / `OU=Tier 1 PAW Devices` and the matching device groups, and the
+  shipped logon rights already refuse the wrong account on the wrong host. An earlier design the
+  same day (one Tier 0 PAW admitting Tier 1 accounts through a new group, OU and policy) was
+  superseded before anything was deployed; it is in the history of this file's branch, not in use.
+- **Expected plan count: `715 + (number of DCs − 1)`** — 711 + 4 gMSA. **+4** if the two optional
+  placeholder GPOs from `shared-admin-hosts.md` §7 go into the customer configuration before the
+  run; they can also be added later, because a *new* GPO is planned on any run. The collision
+  check then reports 31 / 29 / 146, or 31 / 29 / 148 with the placeholders.
+- **Open until tested on the first host:** whether the enforced Tier 0 policy blocks direct RDP
+  from an ordinary client, or is bypassed by an NTLM fallback (`shared-admin-hosts.md` §4, tests
+  B5/B6). It decides whether Tier 0 enforcement goes ahead, stays in audit mode, or moves to AVD.
+
 **Then:** second identical run (`Applied: 0 / Converged: True`), audit (`Drift 0 / Errors 0`),
 localization report (`No problems found.`). The go-live levers come after, each its own change.
 
